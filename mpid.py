@@ -4,6 +4,8 @@ plt.rcParams.update({'font.size': 14})
 import os
 import pyfftw
 import nlopt
+from autograd import tensor_jacobian_product, grad as gd
+from filters import conic_filter
 
 def make_2Dplot_of(given_field:np.ndarray, grid_X:np.ndarray, grid_Y:np.ndarray, plot_zoom_x:float,plot_zoom_y:float,choose_quantity="amplitude",save_name="plot") -> None:
     '''Makes a plot of the given 2D field in a zoomed region. 
@@ -109,6 +111,18 @@ class SpaceGrid:
     
     def get_sampling_period(self):
         return self.sampling_period
+
+    def get_resolution(self):
+        return self.unit_cell_pitch
+
+    def get_unit_cell_pitch(self):
+        return self.unit_cell_pitch
+
+    def get_size_x(self):
+        return self.size_x
+
+    def get_size_y(self):
+        return self.size_y
 
     def get_Nx(self):
         return self.Nx
@@ -332,7 +346,7 @@ class Simulation:
         pyfftw.interfaces.cache.disable()
         pyfftw.config.PLANNER_EFFORT = planner_effort
 
-    def set_optimization(self, opt_param_min, opt_param_max, ms_max_avail_diameter, phase_mask_init_size, opt_max_eval, results_while_solving=True, custom_mask = None):
+    def set_optimization(self, opt_param_min, opt_param_max, ms_max_avail_diameter, phase_mask_init_size, opt_max_eval, conic_filter_radius, results_while_solving=True, custom_mask = None):
         '''
         Sets the optimization parameters for the simulation.
         Args:
@@ -348,6 +362,10 @@ class Simulation:
         self.opt_max_eval = opt_max_eval
         self.results_while_solving = results_while_solving
         self.custom_mask = custom_mask #future: one might be able to directly pass a custom mask
+        self.filter_radius = conic_filter_radius
+        filtered_phase_mask_1 = self._phase_filter(self.phase_mask[:self.space_grid.get_S()])
+        filtered_phase_mask_2 = self._phase_filter(self.phase_mask[self.space_grid.get_S():])
+        self.filtered_phase_mask = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
         
         mask_upper_bounds = self.norm_phase_max * np.where( self.space_grid.get_X().flatten()**2 + self.space_grid.get_Y().flatten()**2 < (self.ms_max_avail_diameter/2)**2, 1, 0)
         mask_upper_bounds = np.concatenate((mask_upper_bounds, mask_upper_bounds),axis=0)
@@ -474,6 +492,14 @@ class Simulation:
         plt.colorbar()
         plt.savefig("results/initialized_phase_mask_2.pdf")
                 
+    def _phase_filter(self, phase_mask):
+        '''Applies a conic filter on the phase mask'''
+        phase_mask_filtered = conic_filter(
+            phase_mask,
+            self.filter_radius,
+            self.space_grid,
+        )
+        return phase_mask_filtered.flatten()
 
     def _forward_propagate(self, source_object: Source):
 
@@ -486,14 +512,14 @@ class Simulation:
         self.intermediate_fields[0] = np.fft.fftshift(self.ifft_operator.output_array)
         input_field = self.intermediate_fields[0].flatten()
 
-        self.fft_input_array[:,:] = np.fft.ifftshift((input_field * np.exp(1j * self.phase_mask[:self.space_grid.get_S()])).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny())))
+        self.fft_input_array[:,:] = np.fft.ifftshift((input_field * np.exp(1j * self.filtered_phase_mask[:self.space_grid.get_S()])).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny())))
         self.fft_operator()
         self.ifft_input_array[:,:] = self.fft_operator.output_array * self.P_nat[1] #element wise product
         self.ifft_operator()
         self.intermediate_fields[1] = np.fft.fftshift(self.ifft_operator.output_array.copy())
         #print("Field intensity after first phase mask and propagation: %.4e" % np.sum(np.abs(self.intermediate_fields[0])**2))
 
-        self.fft_input_array[:,:] = np.fft.ifftshift(np.fft.fftshift(self.ifft_operator.output_array) * np.exp(1j * self.phase_mask[self.space_grid.get_S():].reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))))
+        self.fft_input_array[:,:] = np.fft.ifftshift(np.fft.fftshift(self.ifft_operator.output_array) * np.exp(1j * self.filtered_phase_mask[self.space_grid.get_S():].reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))))
         self.fft_operator()
         self.ifft_input_array[:,:] = self.fft_operator.output_array * self.P_nat[2] #element wise product
         self.ifft_operator()
@@ -520,8 +546,8 @@ class Simulation:
         return g_2d[:self.space_grid.get_nx()+1, :self.space_grid.get_ny()+1].flatten()
 
     def _adjoint_propagate(self, target):
-        Phi_1_dagger = np.exp(-1j * self.phase_mask[:self.space_grid.get_S()]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
-        Phi_2_dagger = np.exp(-1j * self.phase_mask[self.space_grid.get_S():]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
+        Phi_1_dagger = np.exp(-1j * self.filtered_phase_mask[:self.space_grid.get_S()]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
+        Phi_2_dagger = np.exp(-1j * self.filtered_phase_mask[self.space_grid.get_S():]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
 
         #compute the adjoint source
         self.fft_input_array[:,:] = np.fft.ifftshift(np.sum(self.intermediate_fields[2] * np.conj(target.get_field())) * target.get_field())
@@ -573,7 +599,6 @@ class Simulation:
         return w_full.flatten()
 
     def _cost_fun(self, x, grad):
-
         if self.space_grid.xy_symmetry:
             ms1_first_quadrant = x[:self.space_grid.get_dof()//2].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
             ms2_first_quadrant = x[self.space_grid.get_dof()//2:].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
@@ -587,6 +612,12 @@ class Simulation:
 
         self.w_norm[:] = all_ms
         self.phase_mask[:] = self._phase_given_w(self.w_norm)
+        
+
+        filtered_phase_mask_1 = self._phase_filter(self.phase_mask[:self.space_grid.get_S()])
+        filtered_phase_mask_2 = self._phase_filter(self.phase_mask[self.space_grid.get_S():])
+
+        self.filtered_phase_mask[:] = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
 
         #after the phase mask is set, we test the same mask across all targets
         C_all_wavelengths = []
@@ -599,20 +630,25 @@ class Simulation:
             C_all_wavelengths.append(C)
 
             if self.space_grid.xy_symmetry:
-                reduced_grad1 = self._reduce_symmetrized_gradient(full_grad1)
-                reduced_grad2 = self._reduce_symmetrized_gradient(full_grad2)
-                reduced_grads = np.concatenate((reduced_grad1, reduced_grad2), axis=0)
+                grad_partial_1 = self._reduce_symmetrized_gradient(full_grad1)
+                grad_partial_2 = self._reduce_symmetrized_gradient(full_grad2)
             else:
-                reduced_grads = np.concatenate((full_grad1, full_grad2), axis=0)
+                grad_partial_1 = full_grad1
+                grad_partial_2 = full_grad2
 
-            grad_partial[:] += reduced_grads * 2 * np.pi / len(self.targets) #average the gradient across all wavelengths
+            jac_grad_1 = tensor_jacobian_product(self._phase_filter)(self.phase_mask[:self.space_grid.get_S()], grad_partial_1)
+            jac_grad_2 = tensor_jacobian_product(self._phase_filter)(self.phase_mask[self.space_grid.get_S():], grad_partial_2)
+            jac_grad = np.concatenate((jac_grad_1, jac_grad_2),axis=0)
+
+            grad_partial[:] += jac_grad
 
         if grad.size > 0:
-            grad[:] = grad_partial
+            grad[:] = grad_partial * 2 * np.pi / len(self.targets) 
 
         #the new cost function considers the average overlap across all wavelengths.
         self.opt_history.append(np.mean(C_all_wavelengths)) 
         self.iter_num[0] += 1
+        print("Iteration:", self.iter_num[0])
         if self.iter_num[0] % 5 == 0 and self.results_while_solving:
             fig, ax = plt.subplots()
             ax.plot(self.opt_history)
