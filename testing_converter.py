@@ -24,6 +24,7 @@ space_grid = pid.SpaceGrid(
     unit_cell_pitch = unit_cell_pitch, 
     prop_distances=d, 
     materials_refr_index=mat_refr_index,
+    xy_symmetry=True,
 )
 
 #define the source
