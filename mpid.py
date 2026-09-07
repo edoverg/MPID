@@ -5,7 +5,7 @@ import os
 import pyfftw
 import nlopt
 
-def make_2Dplot_of(given_field,grid_X,grid_Y,plot_zoom_x,plot_zoom_y,choose_quantity="amplitude",save_name="plot") -> None:
+def make_2Dplot_of(given_field:np.ndarray, grid_X:np.ndarray, grid_Y:np.ndarray, plot_zoom_x:float,plot_zoom_y:float,choose_quantity="amplitude",save_name="plot") -> None:
     '''Makes a plot of the given 2D field in a zoomed region. 
     Saves the plot with the chosen filename to a PDF file. 
     Args:
@@ -60,14 +60,20 @@ def make_1Dplot_of(x_axis,y_axis,plot_zoom_x,save_name="plot_1D",) -> None:
     plt.close()
 
 class SpaceGrid:
-    def __init__(self, side_pixels: int, unit_cell_pitch: float, prop_distances: np.ndarray, materials_refr_index: np.ndarray):
+    def __init__(self, side_pixels: int, unit_cell_pitch: float, prop_distances: np.ndarray, materials_refr_index: np.ndarray, xy_symmetry=False):
         self.Nx = side_pixels#for the moment we consider only square grids
         self.Ny = side_pixels
         self.unit_cell_pitch = unit_cell_pitch
         self.nx = (self.Nx - 1) // 2
         self.ny = (self.Ny - 1) // 2
-        self.dof = 2*((self.nx + 1)**2) #this needs to be computed depending on problem symmetry, which should be passed as argument (symmetry should be an instance of the Symmetry class)
+        self.xy_symmetry = xy_symmetry
         self.S = self.Nx * self.Ny
+
+        if self.xy_symmetry:
+            self.dof = 2*((self.nx + 1)**2)
+        else:
+            self.dof = 2 * self.S
+
         self.size_x = self.unit_cell_pitch * self.Nx
         self.size_y = self.unit_cell_pitch * self.Ny
         self.xs = np.arange(-self.Nx//2+1, self.Nx//2+1) * (self.size_x / self.Nx)
@@ -128,14 +134,20 @@ class SpaceGrid:
     def get_Y(self):
         return self.Y
 
+    def get_XY(self):
+        return self.X, self.Y
+
     def get_rho(self):
         return self.rho
     
 class Field:
-    def __init__(self, input_field: np.ndarray, wavelength: float, space_grid: SpaceGrid):
-        self.input_field = input_field
-        self.wavelength = wavelength
+    def __init__(self, input_field: np.ndarray, wavelength: float, space_grid: SpaceGrid, center=(0,0)):
+        self.center = center
         self.space_grid = space_grid
+        self.input_field = self._shift_field(input_field)
+        self.wavelength = wavelength
+        
+        
         if self.input_field.shape != self.space_grid.get_grid_shape():
             raise ValueError("Input field must have the same shape as the space grid it is applied onto.")
 
@@ -147,7 +159,16 @@ class Field:
     def get_wavelength(self):
         return self.wavelength
 
-    def plot2D(self, plot_zoom_x, plot_zoom_y, choose_quantity="amplitude", save_name="results/plot_out"):
+    def get_center(self):
+        return self.center
+
+    def _shift_field(self,input_field):
+        #take the input field and shift it according to the center
+        shift_field_x = np.roll(input_field, shift=int(self.center[0]/self.space_grid.get_sampling_period()), axis=1)
+        shift_field_y = np.roll(shift_field_x, shift=int(self.center[1]/self.space_grid.get_sampling_period()), axis=0)
+        return shift_field_y
+
+    def plot2D(self, plot_zoom_x:float, plot_zoom_y:float, choose_quantity="amplitude", save_name="results/plot_out"):
         make_2Dplot_of(self.input_field, 
                        self.space_grid.X, 
                        self.space_grid.Y,
@@ -157,17 +178,61 @@ class Field:
                        save_name)
 
 class Source(Field):
-    def __init__(self, input_field: np.ndarray, wavelength: float, space_grid: SpaceGrid, wvl_unit_measure = 1,):
-        super().__init__(input_field, wavelength * wvl_unit_measure, space_grid)
+    def __init__(self, input_field: np.ndarray | str, wavelength: float, space_grid: SpaceGrid, wvl_unit_measure = 1, field_norm = False, center = (0,0)):
+        if isinstance(input_field, str):
+            input_field_to_constr = np.load(input_field)
+            input_field_shape = input_field_to_constr.shape
+            input_field_to_constr = (input_field_to_constr / np.sqrt(np.sum(np.abs(input_field_to_constr)**2))).reshape(input_field_shape)
+        else:
+            input_field_to_constr = input_field
+
+        if field_norm:
+            input_field_to_constr = input_field_to_constr / np.sqrt(np.sum(np.abs(input_field_to_constr)**2))
+
+        super().__init__(input_field_to_constr, wavelength * wvl_unit_measure, space_grid, center=center)
         self.type = "source"
 
     def get_type(self):
         return self.type
 
+class GaussianBeam():
+    def __init__(self, beam_waist: float, space_grid: SpaceGrid, center=np.array([0,0]), field_norm = False):
+        self.beam_waist = beam_waist
+        self.center = center
+        self.space_grid = space_grid
+        generated_field = self._generate_gaussian_beam()
+        if field_norm:
+            self.field = generated_field / np.sqrt(np.sum(np.abs(generated_field)**2))
+        else:
+            self.field = generated_field
+        
+    def _generate_gaussian_beam(self):
+        X = self.space_grid.X - self.center[0]
+        Y = self.space_grid.Y - self.center[1]
+        r_squared = X**2 + Y**2
+        return np.exp(-r_squared / self.beam_waist**2)
+
+    def get_field(self):
+        return self.field
+
+    def get_space_grid(self):
+        return self.space_grid
+
 class Target(Field):
-    def __init__(self, input_field: np.ndarray, associated_source: Source, wavelength: float, space_grid: SpaceGrid, wvl_unit_measure = 1):
-        super().__init__(input_field, wavelength * wvl_unit_measure, space_grid)
+    def __init__(self, input_field: np.ndarray | str | Field ,associated_source: Source, wavelength: float, space_grid: SpaceGrid, wvl_unit_measure = 1, field_norm = False, center = (0,0)):
+        if isinstance(input_field, str):
+            input_field_to_constr = np.load(input_field)
+            input_field_shape = input_field_to_constr.shape
+            input_field_to_constr = (input_field_to_constr / np.sqrt(np.sum(np.abs(input_field_to_constr)**2))).reshape(input_field_shape)
+        else:
+            input_field_to_constr = input_field
+
+        if field_norm:
+            input_field_to_constr = input_field_to_constr / np.sqrt(np.sum(np.abs(input_field_to_constr)**2))
+
+        super().__init__(input_field_to_constr, wavelength * wvl_unit_measure, space_grid, center=center)
         self.type = "target"
+
         if associated_source.get_wavelength() != wavelength * wvl_unit_measure:
             raise ValueError("Associated source must have the same wavelength as the target.")
         else:
@@ -232,7 +297,7 @@ class Simulation:
 
         self.P = [np.exp(1j * self.phase_factors[i]) for i in range(len(self.phase_factors))]
         self.P_nat = [np.fft.ifftshift(self.P[i]) for i in range(len(self.P))]
-        
+
         #phase masks initialization
         self.w_norm = np.zeros((2*self.space_grid.get_S()))
         self.w_norm_symm = np.zeros(self.space_grid.get_dof())
@@ -284,12 +349,20 @@ class Simulation:
         self.results_while_solving = results_while_solving
         self.custom_mask = custom_mask #future: one might be able to directly pass a custom mask
         
-
         mask_upper_bounds = self.norm_phase_max * np.where( self.space_grid.get_X().flatten()**2 + self.space_grid.get_Y().flatten()**2 < (self.ms_max_avail_diameter/2)**2, 1, 0)
-        mask_upper_bounds_symm = mask_upper_bounds.reshape((self.space_grid.get_Nx(),self.space_grid.get_Ny()))[:self.space_grid.get_nx()+1, :self.space_grid.get_ny()+1].flatten()
+        mask_upper_bounds = np.concatenate((mask_upper_bounds, mask_upper_bounds),axis=0)
+        mask_lower_bounds = np.zeros_like(mask_upper_bounds)
+        
+        if self.space_grid.xy_symmetry:
+            mask_upper_bounds_symm = mask_upper_bounds.reshape((self.space_grid.get_Nx(),self.space_grid.get_Ny()))[:self.space_grid.get_nx()+1, :self.space_grid.get_ny()+1].flatten()
+            mask_upper_bounds_symm = np.concatenate((mask_upper_bounds_symm, mask_upper_bounds_symm),axis=0)
+            mask_lower_bounds_symm = np.zeros_like(mask_upper_bounds_symm)
+            self.chosen_mask_upper_bounds = mask_upper_bounds_symm
+            self.chosen_mask_lower_bounds = mask_lower_bounds_symm
+        else:
+            self.chosen_mask_upper_bounds = mask_upper_bounds
+            self.chosen_mask_lower_bounds = mask_lower_bounds
 
-        self.mask_upper_bounds_symm = np.concatenate((mask_upper_bounds_symm, mask_upper_bounds_symm),axis=0)
-        self.mask_lower_bounds_symm = np.zeros_like(self.mask_upper_bounds_symm)
         
     def get_sources(self):
         return self.sources
@@ -349,28 +422,58 @@ class Simulation:
 
         return w_symm.flatten()
 
+    def _build_circular_mask(self, center, radius):
+        '''
+        Builds a circular mask centered at the given position with the specified radius.
+        '''
+        x_center, y_center = center
+        X, Y = self.space_grid.get_XY()
+        rho = np.sqrt((X - x_center)**2 + (Y - y_center)**2)
+        return np.where(rho.flatten() < radius, 1, 0)
+
     def _initialize_phase_masks(self):
         '''
         Initializes the phase masks for the simulation.
         This method should be called once, before iterating over the targets.
         If multiple targets are present in this simulation instance, the first initialization uses the first target
         '''
+        source_to_initialize = self.sources[0]
         target_to_initialize = self.targets[0]
+
+        source_Efield = source_to_initialize.get_field(flatten=True)
+        source_center = source_to_initialize.get_center()
         target_Efield = target_to_initialize.get_field(flatten=True)
+        target_center = target_to_initialize.get_center()
 
         self.w_norm = np.zeros((2*self.space_grid.get_S()))
 
-        circular_mask_1 = np.where(self.space_grid.get_rho().flatten() < self.phase_mask_init_size, 1, 0)
-        target_pattern_phase = (np.angle(target_Efield) + 2 * np.pi) % (2 * np.pi)*circular_mask_1 #make sure the phase is between 0 and 2pi
+        circular_mask_target = self._build_circular_mask(target_center, self.phase_mask_init_size)
+        circular_mask_source = self._build_circular_mask(source_center, self.phase_mask_init_size)
 
+        source_pattern_phase = (np.angle(source_Efield) + 2 * np.pi) % (2 * np.pi) * circular_mask_source #make sure the phase is between 0 and 2pi
+        target_pattern_phase = (np.angle(target_Efield) + 2 * np.pi) % (2 * np.pi) * circular_mask_target #make sure the phase is between 0 and 2pi
+        
+        self.w_norm[:self.space_grid.get_S()] += source_pattern_phase / (2 * np.pi) #normalize the source phase to be between 0 and 1
         self.w_norm[self.space_grid.get_S():] += target_pattern_phase / (2 * np.pi) #normalize the target phase to be between 0 and 1
+        
+        if self.space_grid.xy_symmetry:
+            w_norm_symm_1 = self._symmetrize(self.w_norm[:self.space_grid.get_S()])
+            w_norm_symm_2 = self._symmetrize(self.w_norm[self.space_grid.get_S():])
 
-        w_norm_symm_1 = self._symmetrize(self.w_norm[:self.space_grid.get_S()])
-        w_norm_symm_2 = self._symmetrize(self.w_norm[self.space_grid.get_S():])
-
-        self.w_norm_symm[:] = np.concatenate((w_norm_symm_1, w_norm_symm_2), axis=0)
+            self.w_norm_symm[:] = np.concatenate((w_norm_symm_1, w_norm_symm_2), axis=0)
 
         self.phase_mask[:] = self._phase_given_w(self.w_norm)
+
+        #make a plot of the initialized phase mask
+        plt.imshow(self.phase_mask[:self.space_grid.get_S()].reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny())), cmap='gray')
+        plt.title("Initialized Phase Mask")
+        plt.colorbar()
+        plt.savefig("results/initialized_phase_mask_1.pdf")
+        plt.imshow(self.phase_mask[self.space_grid.get_S():].reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny())), cmap='gray')
+        plt.title("Initialized Phase Mask")
+        plt.colorbar()
+        plt.savefig("results/initialized_phase_mask_2.pdf")
+                
 
     def _forward_propagate(self, source_object: Source):
 
@@ -397,6 +500,10 @@ class Simulation:
         self.intermediate_fields[2] = np.fft.fftshift(self.ifft_operator.output_array.copy())
 
         self.output_field = self.intermediate_fields[-1].flatten()
+
+        #make a plot of intermediate fields
+        #for i, field in enumerate(self.intermediate_fields):
+        #    make_2Dplot_of(field, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=60, plot_zoom_y=60, choose_quantity="amplitude", save_name=f"results/intermediate_field_{i+1}_plot")
 
 
     def _reduce_symmetrized_gradient(self, g_full):
@@ -439,6 +546,8 @@ class Simulation:
         wavelength = source.get_wavelength()
 
         self._update_wavelength(wavelength)
+        #we shall consider using a conic filter: before doing the forward propagation,
+        #we filter the masks
         self._forward_propagate(source)
 
         C_s = np.real(np.abs(np.sum(self.output_field * np.conj(target.get_field(flatten=True)))) ** 2)
@@ -451,7 +560,6 @@ class Simulation:
         Takes a array of shape (nx+1, ny+1), representing the first quadrant, including zero axes, and 
         expands it to a full 2D array of shape (Nx, Ny) by mirroring, flattened.
         '''
-
         w_symm_2d = w_symm.reshape((self.space_grid.get_nx()+1, self.space_grid.get_ny()+1))
 
         w_full = np.zeros((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
@@ -466,11 +574,14 @@ class Simulation:
 
     def _cost_fun(self, x, grad):
 
-        ms1_first_quadrant = x[:self.space_grid.get_dof()//2].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
-        ms2_first_quadrant = x[self.space_grid.get_dof()//2:].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
-
-        ms1 = self._expand_symmetrize(ms1_first_quadrant)
-        ms2 = self._expand_symmetrize(ms2_first_quadrant)
+        if self.space_grid.xy_symmetry:
+            ms1_first_quadrant = x[:self.space_grid.get_dof()//2].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
+            ms2_first_quadrant = x[self.space_grid.get_dof()//2:].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
+            ms1 = self._expand_symmetrize(ms1_first_quadrant)
+            ms2 = self._expand_symmetrize(ms2_first_quadrant)
+        else:
+            ms1 = x[:self.space_grid.get_dof()//2]
+            ms2 = x[self.space_grid.get_dof()//2:]
 
         all_ms = np.concatenate((ms1, ms2))
 
@@ -487,9 +598,13 @@ class Simulation:
 
             C_all_wavelengths.append(C)
 
-            reduced_grad1 = self._reduce_symmetrized_gradient(full_grad1)
-            reduced_grad2 = self._reduce_symmetrized_gradient(full_grad2)
-            reduced_grads = np.concatenate((reduced_grad1, reduced_grad2), axis=0)
+            if self.space_grid.xy_symmetry:
+                reduced_grad1 = self._reduce_symmetrized_gradient(full_grad1)
+                reduced_grad2 = self._reduce_symmetrized_gradient(full_grad2)
+                reduced_grads = np.concatenate((reduced_grad1, reduced_grad2), axis=0)
+            else:
+                reduced_grads = np.concatenate((full_grad1, full_grad2), axis=0)
+
             grad_partial[:] += reduced_grads * 2 * np.pi / len(self.targets) #average the gradient across all wavelengths
 
         if grad.size > 0:
@@ -498,7 +613,7 @@ class Simulation:
         #the new cost function considers the average overlap across all wavelengths.
         self.opt_history.append(np.mean(C_all_wavelengths)) 
         self.iter_num[0] += 1
-        if self.iter_num[0] % 10 == 0 and self.results_while_solving:
+        if self.iter_num[0] % 5 == 0 and self.results_while_solving:
             fig, ax = plt.subplots()
             ax.plot(self.opt_history)
             ax.set_xlabel('Iteration')
@@ -525,8 +640,20 @@ class Simulation:
         Placeholder method for exporting the results of the optimization.
         This method should be implemented to save the relevant data.
         '''
+        #output fields
+        output_field = []
+        for i,source in enumerate(self.sources):
+            self._forward_propagate(source)
+            output_field.append(self.intermediate_fields[-1])
+
+            np.save(f"{self.results_folder}/output_fields_{i}.npy", output_field[-1])
+            make_2Dplot_of(output_field[-1], self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=60, plot_zoom_y=60, choose_quantity="amplitude", save_name=f"{self.results_folder}/output_fields_{i}_plot")
+
+        #phase masks
         phase_mask_1 = self._phase_given_w(self.w_norm[:self.space_grid.get_S()]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
         phase_mask_2 = self._phase_given_w(self.w_norm[self.space_grid.get_S():]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
+        make_2Dplot_of(phase_mask_1, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=60, plot_zoom_y=60, choose_quantity="phase_mask", save_name=f"{self.results_folder}/phase_mask_1_plot")
+        make_2Dplot_of(phase_mask_2, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=60, plot_zoom_y=60, choose_quantity="phase_mask", save_name=f"{self.results_folder}/phase_mask_2_plot")
         np.save(f"{self.results_folder}/optimized_phase_mask_1.npy", phase_mask_1)
         np.save(f"{self.results_folder}/optimized_phase_mask_2.npy", phase_mask_2)
 
@@ -562,22 +689,26 @@ class Simulation:
         '''
         if self.is_optimization_set:
             print("Starting optimization...")
-        
             self._initialize_phase_masks()
             #initialize nlopt solver
             solver = nlopt.opt(nlopt.LD_CCSAQ, self.space_grid.get_dof())
-            solver.set_lower_bounds(self.mask_lower_bounds_symm.flatten())
-            solver.set_upper_bounds(self.mask_upper_bounds_symm.flatten())
+            solver.set_lower_bounds(self.chosen_mask_lower_bounds.flatten())
+            solver.set_upper_bounds(self.chosen_mask_upper_bounds.flatten())
             solver.set_max_objective(self._cost_fun)
             solver.set_maxeval(self.opt_max_eval)
             solver.set_param("dual_ftol_rel", 1e-7)
             solver.set_param("verbosity",0)
 
-            self.w_norm_symm[:] = solver.optimize(self.w_norm_symm)
-            self.is_optimized_flag = True
-            self.best_opt_val = solver.last_optimum_value()
-            self.w_norm[:self.space_grid.get_S()] = self._expand_symmetrize(self.w_norm_symm[:self.space_grid.get_dof()//2])
-            self.w_norm[self.space_grid.get_S():] = self._expand_symmetrize(self.w_norm_symm[self.space_grid.get_dof()//2:])
+            if self.space_grid.xy_symmetry:
+                self.w_norm_symm[:] = solver.optimize(self.w_norm_symm)
+                self.is_optimized_flag = True
+                self.best_opt_val = solver.last_optimum_value()
+                self.w_norm[:self.space_grid.get_S()] = self._expand_symmetrize(self.w_norm_symm[:self.space_grid.get_dof()//2])
+                self.w_norm[self.space_grid.get_S():] = self._expand_symmetrize(self.w_norm_symm[self.space_grid.get_dof()//2:])
+            else:
+                self.w_norm[:] = solver.optimize(self.w_norm)
+                self.is_optimized_flag = True
+                self.best_opt_val = solver.last_optimum_value()
 
             self._export_results()
         else:
