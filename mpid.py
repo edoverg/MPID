@@ -5,6 +5,7 @@ import os
 import pyfftw
 import nlopt
 from autograd import tensor_jacobian_product, grad as gd
+import autograd.numpy as npa
 from filters import conic_filter
 
 def make_2Dplot_of(given_field:np.ndarray, grid_X:np.ndarray, grid_Y:np.ndarray, plot_zoom_x:float,plot_zoom_y:float,choose_quantity="amplitude",save_name="plot") -> None:
@@ -62,6 +63,8 @@ def make_1Dplot_of(x_axis,y_axis,plot_zoom_x,save_name="plot_1D",) -> None:
     plt.close()
 
 class SpaceGrid:
+    '''
+    '''
     def __init__(self, side_pixels: int, unit_cell_pitch: float, prop_distances: np.ndarray, materials_refr_index: np.ndarray, xy_symmetry=False):
         self.Nx = side_pixels#for the moment we consider only square grids
         self.Ny = side_pixels
@@ -346,7 +349,7 @@ class Simulation:
         pyfftw.interfaces.cache.disable()
         pyfftw.config.PLANNER_EFFORT = planner_effort
 
-    def set_optimization(self, opt_param_min, opt_param_max, ms_max_avail_diameter, phase_mask_init_size, opt_max_eval, conic_filter_radius, results_while_solving=True, custom_mask = None):
+    def set_optimization(self, opt_param_min, opt_param_max, ms_max_avail_diameter, phase_mask_init_size, opt_max_eval, conic_filter_radius = None, results_while_solving=True, custom_mask = None):
         '''
         Sets the optimization parameters for the simulation.
         Args:
@@ -362,24 +365,33 @@ class Simulation:
         self.opt_max_eval = opt_max_eval
         self.results_while_solving = results_while_solving
         self.custom_mask = custom_mask #future: one might be able to directly pass a custom mask
-        self.filter_radius = conic_filter_radius
-        filtered_phase_mask_1 = self._phase_filter(self.phase_mask[:self.space_grid.get_S()])
-        filtered_phase_mask_2 = self._phase_filter(self.phase_mask[self.space_grid.get_S():])
-        self.filtered_phase_mask = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
+        if conic_filter_radius is None:
+            self.use_filtering = False
+        else:
+            self.use_filtering = True
+            self.filter_radius = None
+            
+        if self.use_filtering:
+            self.filter_radius = conic_filter_radius
+            filtered_phase_mask_1 = self._phase_filter(self.phase_mask[:self.space_grid.get_S()])
+            filtered_phase_mask_2 = self._phase_filter(self.phase_mask[self.space_grid.get_S():])
+            self.filtered_phase_mask = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
+        else:
+            self.filtered_phase_mask = self.phase_mask
         
         mask_upper_bounds = self.norm_phase_max * np.where( self.space_grid.get_X().flatten()**2 + self.space_grid.get_Y().flatten()**2 < (self.ms_max_avail_diameter/2)**2, 1, 0)
-        mask_upper_bounds = np.concatenate((mask_upper_bounds, mask_upper_bounds),axis=0)
-        mask_lower_bounds = np.zeros_like(mask_upper_bounds)
+        mask_upper_bounds_full = np.concatenate((mask_upper_bounds, mask_upper_bounds),axis=0)
+        mask_lower_bounds_full = np.zeros_like(mask_upper_bounds_full)
         
         if self.space_grid.xy_symmetry:
             mask_upper_bounds_symm = mask_upper_bounds.reshape((self.space_grid.get_Nx(),self.space_grid.get_Ny()))[:self.space_grid.get_nx()+1, :self.space_grid.get_ny()+1].flatten()
-            mask_upper_bounds_symm = np.concatenate((mask_upper_bounds_symm, mask_upper_bounds_symm),axis=0)
-            mask_lower_bounds_symm = np.zeros_like(mask_upper_bounds_symm)
-            self.chosen_mask_upper_bounds = mask_upper_bounds_symm
-            self.chosen_mask_lower_bounds = mask_lower_bounds_symm
+            mask_upper_bounds_symm_full = np.concatenate((mask_upper_bounds_symm, mask_upper_bounds_symm),axis=0)
+            mask_lower_bounds_symm_full = np.zeros_like(mask_upper_bounds_symm_full)
+            self.chosen_mask_upper_bounds = mask_upper_bounds_symm_full
+            self.chosen_mask_lower_bounds = mask_lower_bounds_symm_full
         else:
-            self.chosen_mask_upper_bounds = mask_upper_bounds
-            self.chosen_mask_lower_bounds = mask_lower_bounds
+            self.chosen_mask_upper_bounds = mask_upper_bounds_full
+            self.chosen_mask_lower_bounds = mask_lower_bounds_full
 
         
     def get_sources(self):
@@ -390,6 +402,9 @@ class Simulation:
 
     def get_space_grid(self):
         return self.space_grid
+
+    def get_ms_max_avail_diameter(self):
+        return self.ms_max_avail_diameter
 
     def get_central_wavelength(self):
         return self.central_wavelength
@@ -453,26 +468,37 @@ class Simulation:
         '''
         Initializes the phase masks for the simulation.
         This method should be called once, before iterating over the targets.
-        If multiple targets are present in this simulation instance, the first initialization uses the first target
+        If multiple source/targets are present in this simulation instance, the mask
+        is locally initialized around each source and target.
         '''
-        source_to_initialize = self.sources[0]
-        target_to_initialize = self.targets[0]
+    
+        source_Efields = [source.get_field(flatten=True) for source in self.sources]
+        source_centers = [source.get_center() for source in self.sources]
 
-        source_Efield = source_to_initialize.get_field(flatten=True)
-        source_center = source_to_initialize.get_center()
-        target_Efield = target_to_initialize.get_field(flatten=True)
-        target_center = target_to_initialize.get_center()
+        target_Efields = [target.get_field(flatten=True) for target in self.targets]
+        target_centers = [target.get_center() for target in self.targets]
 
         self.w_norm = np.zeros((2*self.space_grid.get_S()))
 
-        circular_mask_target = self._build_circular_mask(target_center, self.phase_mask_init_size)
-        circular_mask_source = self._build_circular_mask(source_center, self.phase_mask_init_size)
+        circular_mask_source = [self._build_circular_mask(source_center, self.phase_mask_init_size) for source_center in source_centers]
+        circular_mask_target = [self._build_circular_mask(target_center, self.phase_mask_init_size) for target_center in target_centers]
 
-        source_pattern_phase = (np.angle(source_Efield) + 2 * np.pi) % (2 * np.pi) * circular_mask_source #make sure the phase is between 0 and 2pi
-        target_pattern_phase = (np.angle(target_Efield) + 2 * np.pi) % (2 * np.pi) * circular_mask_target #make sure the phase is between 0 and 2pi
-        
-        self.w_norm[:self.space_grid.get_S()] += source_pattern_phase / (2 * np.pi) #normalize the source phase to be between 0 and 1
-        self.w_norm[self.space_grid.get_S():] += target_pattern_phase / (2 * np.pi) #normalize the target phase to be between 0 and 1
+        source_pattern_phase = [(np.angle(source_Efields[i]) + 2 * np.pi) % (2 * np.pi) * circular_mask_source[i] for i in range(len(source_Efields))] #make sure the phase is between 0 and 2pi
+        target_pattern_phase = [(np.angle(target_Efields[i]) + 2 * np.pi) % (2 * np.pi) * circular_mask_target[i] for i in range(len(target_Efields))] #make sure the phase is between 0 and 2pi
+
+        #initialize mask on source side
+        cumulated_source_phase = np.zeros_like(self.w_norm[:self.space_grid.get_S()])
+        for _, source_phase in enumerate(source_pattern_phase):
+            cumulated_source_phase += source_phase / (2 * np.pi) #normalize the source phase to be between 0 and 1
+
+        self.w_norm[:self.space_grid.get_S()] = ((cumulated_source_phase + 2*np.pi) % (2*np.pi)) / (2*np.pi)
+
+        #initialize mask on target side
+        cumulated_target_phase = np.zeros_like(self.w_norm[self.space_grid.get_S():])
+        for _, target_phase in enumerate(target_pattern_phase):
+            cumulated_target_phase += target_phase / (2 * np.pi) #normalize the target phase to be between 0 and 1
+
+        self.w_norm[self.space_grid.get_S():] = ((cumulated_target_phase + 2*np.pi) % (2*np.pi)) / (2*np.pi)
         
         if self.space_grid.xy_symmetry:
             w_norm_symm_1 = self._symmetrize(self.w_norm[:self.space_grid.get_S()])
@@ -481,25 +507,36 @@ class Simulation:
             self.w_norm_symm[:] = np.concatenate((w_norm_symm_1, w_norm_symm_2), axis=0)
 
         self.phase_mask[:] = self._phase_given_w(self.w_norm)
-
-        #make a plot of the initialized phase mask
-        plt.imshow(self.phase_mask[:self.space_grid.get_S()].reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny())), cmap='gray')
-        plt.title("Initialized Phase Mask")
-        plt.colorbar()
-        plt.savefig("results/initialized_phase_mask_1.pdf")
-        plt.imshow(self.phase_mask[self.space_grid.get_S():].reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny())), cmap='gray')
-        plt.title("Initialized Phase Mask")
-        plt.colorbar()
-        plt.savefig("results/initialized_phase_mask_2.pdf")
                 
-    def _phase_filter(self, phase_mask):
-        '''Applies a conic filter on the phase mask'''
-        phase_mask_filtered = conic_filter(
-            phase_mask,
+    def _phase_filter(self, phase_mask: np.ndarray) -> np.ndarray:
+        '''Applies a conic filter on the phase mask. The filtering action is equivalent to a local weighted averaging of the phase.
+        Note that due to the circular behavior of phase, a direct averaging of phase values can lead to incorrect results. 
+        The following code averages the sine and cosine components separately and then reconstructs the phase mask through the arctangent.
+        A practical example might help: if the phase mask contains values close to 0 and 2π, a direct averaging would incorrectly yield a value around π. 
+        By averaging the sine and cosine components separately, the correct average near 0 (or 2π) is obtained.
+
+        Args:
+            phase_mask (ndarray): The input phase mask to be filtered.
+
+        Returns:
+            ndarray: The filtered phase mask.
+        '''
+
+        phase_mask_cos = npa.cos(phase_mask)
+        phase_mask_sin = npa.sin(phase_mask)
+
+        phase_mask_filtered_cos = conic_filter(
+            phase_mask_cos,
             self.filter_radius,
             self.space_grid,
         )
-        return phase_mask_filtered.flatten()
+
+        phase_mask_filtered_sin = conic_filter(
+            phase_mask_sin,
+            self.filter_radius,
+            self.space_grid,
+        )
+        return npa.arctan2(phase_mask_filtered_sin, phase_mask_filtered_cos)
 
     def _forward_propagate(self, source_object: Source):
 
@@ -533,6 +570,11 @@ class Simulation:
 
 
     def _reduce_symmetrized_gradient(self, g_full):
+        '''
+        Utility function that takes a spatial full size gradient and reduces it 
+        to a smaller, symmetrized representation. In other words, it combines
+        the contributions from the other quadrants into the selected quadrant.
+        '''
         g_2d = g_full.reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
 
         third = g_2d[self.space_grid.get_nx()+1:,:self.space_grid.get_ny()+1]
@@ -612,12 +654,15 @@ class Simulation:
 
         self.w_norm[:] = all_ms
         self.phase_mask[:] = self._phase_given_w(self.w_norm)
-        
+        phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
+        phase_mask_2 = self.phase_mask[self.space_grid.get_S():]
+        if self.use_filtering:
+            filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
+            filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
 
-        filtered_phase_mask_1 = self._phase_filter(self.phase_mask[:self.space_grid.get_S()])
-        filtered_phase_mask_2 = self._phase_filter(self.phase_mask[self.space_grid.get_S():])
-
-        self.filtered_phase_mask[:] = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
+            self.filtered_phase_mask[:] = npa.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
+        else:
+            self.filtered_phase_mask[:] = self.phase_mask
 
         #after the phase mask is set, we test the same mask across all targets
         C_all_wavelengths = []
@@ -625,20 +670,19 @@ class Simulation:
 
         for target in self.targets:
 
-            C, full_grad1, full_grad2 = self._value_and_grad(target) 
+            C, full_grad_1, full_grad_2 = self._value_and_grad(target) 
 
             C_all_wavelengths.append(C)
 
-            if self.space_grid.xy_symmetry:
-                grad_partial_1 = self._reduce_symmetrized_gradient(full_grad1)
-                grad_partial_2 = self._reduce_symmetrized_gradient(full_grad2)
-            else:
-                grad_partial_1 = full_grad1
-                grad_partial_2 = full_grad2
+            jac_grad_1 = tensor_jacobian_product(self._phase_filter)(phase_mask_1, full_grad_1)
+            jac_grad_2 = tensor_jacobian_product(self._phase_filter)(phase_mask_2, full_grad_2)
 
-            jac_grad_1 = tensor_jacobian_product(self._phase_filter)(self.phase_mask[:self.space_grid.get_S()], grad_partial_1)
-            jac_grad_2 = tensor_jacobian_product(self._phase_filter)(self.phase_mask[self.space_grid.get_S():], grad_partial_2)
-            jac_grad = np.concatenate((jac_grad_1, jac_grad_2),axis=0)
+            if self.space_grid.xy_symmetry:
+                jac_grad_1_symm = self._reduce_symmetrized_gradient(jac_grad_1)
+                jac_grad_2_symm = self._reduce_symmetrized_gradient(jac_grad_2)
+                jac_grad = np.concatenate((jac_grad_1_symm, jac_grad_2_symm), axis=0)
+            else:
+                jac_grad = np.concatenate((jac_grad_1, jac_grad_2),axis=0)
 
             grad_partial[:] += jac_grad
 
@@ -683,15 +727,23 @@ class Simulation:
             output_field.append(self.intermediate_fields[-1])
 
             np.save(f"{self.results_folder}/output_fields_{i}.npy", output_field[-1])
-            make_2Dplot_of(output_field[-1], self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=60, plot_zoom_y=60, choose_quantity="amplitude", save_name=f"{self.results_folder}/output_fields_{i}_plot")
+            make_2Dplot_of(output_field[-1], self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=self.get_ms_max_avail_diameter()/2, plot_zoom_y=self.get_ms_max_avail_diameter()/2, choose_quantity="amplitude", save_name=f"{self.results_folder}/output_fields_{i}_plot")
+            make_2Dplot_of(output_field[-1], self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=self.get_ms_max_avail_diameter()/2, plot_zoom_y=self.get_ms_max_avail_diameter()/2, choose_quantity="phase", save_name=f"{self.results_folder}/output_fields_{i}_phase_plot")
 
         #phase masks
         phase_mask_1 = self._phase_given_w(self.w_norm[:self.space_grid.get_S()]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
         phase_mask_2 = self._phase_given_w(self.w_norm[self.space_grid.get_S():]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
-        make_2Dplot_of(phase_mask_1, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=60, plot_zoom_y=60, choose_quantity="phase_mask", save_name=f"{self.results_folder}/phase_mask_1_plot")
-        make_2Dplot_of(phase_mask_2, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=60, plot_zoom_y=60, choose_quantity="phase_mask", save_name=f"{self.results_folder}/phase_mask_2_plot")
+        filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
+        filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
+        make_2Dplot_of(phase_mask_1, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=self.get_ms_max_avail_diameter()/2, plot_zoom_y=self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/phase_mask_1_plot")
+        make_2Dplot_of(phase_mask_2, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=self.get_ms_max_avail_diameter()/2, plot_zoom_y=self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/phase_mask_2_plot")
+        make_2Dplot_of(filtered_phase_mask_1, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=self.get_ms_max_avail_diameter()/2, plot_zoom_y=self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/filtered_phase_mask_1_plot")
+        make_2Dplot_of(filtered_phase_mask_2, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=self.get_ms_max_avail_diameter()/2, plot_zoom_y=self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/filtered_phase_mask_2_plot")
+
         np.save(f"{self.results_folder}/optimized_phase_mask_1.npy", phase_mask_1)
         np.save(f"{self.results_folder}/optimized_phase_mask_2.npy", phase_mask_2)
+        np.save(f"{self.results_folder}/filtered_phase_mask_1.npy", filtered_phase_mask_1)
+        np.save(f"{self.results_folder}/filtered_phase_mask_2.npy", filtered_phase_mask_2)
 
     def get_best_opt_val(self):
         if self.is_optimized_flag:

@@ -56,7 +56,6 @@ target2 = pid.Target(input_field='fiber_modes/LP01_field_distribution_lda_1550_N
                      field_norm=True) 
 
 #make a plot of sources and targets
-
 target.plot2D(plot_zoom_x=100, plot_zoom_y=100, choose_quantity="amplitude", save_name="results/target_plot")
 target2.plot2D(plot_zoom_x=100, plot_zoom_y=100, choose_quantity="amplitude", save_name="results/target2_plot")
 source1.plot2D(plot_zoom_x=100, plot_zoom_y=100, choose_quantity="amplitude", save_name="results/source1_plot")

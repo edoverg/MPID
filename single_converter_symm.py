@@ -1,6 +1,8 @@
 import mpid as pid
 import numpy as np
-
+import os
+if not os.path.exists("results"):
+    os.makedirs("results")
 #Space grid definition
 N = 1025
 unit_cell_pitch = 700e-9
@@ -42,16 +44,16 @@ sources = [pid.Source(input_field=gaussian_field_normalized,
 sources[0].plot2D(plot_zoom_x=38,plot_zoom_y=38,choose_quantity='amplitude', save_name='results/input_field')
 #define targets
 #import field data from files and create target objects
-target_files = ["fiber_modes/LP21_field_distribution_1025.npy"]
+target_files = ["fiber_modes/LP21_field_distribution_lda_1550_N_1025.npy",]
 
 target_fields = [np.load(file) for file in target_files]
-norm_target_fields = [field / np.sqrt(np.sum(np.abs(field)**2)) for field in target_fields]
 
-targets = [pid.Target(input_field=norm_target_fields[i], 
+targets = [pid.Target(input_field=target_fields[i], 
                       associated_source=sources[i], 
                       wavelength=wvl, 
                       space_grid=space_grid, 
-                      wvl_unit_measure=space_grid.nm) for i, (file, wvl) in enumerate(zip(target_files, wavelengths_to_test_nm))]
+                      wvl_unit_measure=space_grid.nm,
+                      field_norm = True) for i, (file, wvl) in enumerate(zip(target_files, wavelengths_to_test_nm))]
 
 targets[0].plot2D(plot_zoom_x=38,plot_zoom_y=38,choose_quantity='amplitude', save_name='results/target_field')
 
@@ -70,6 +72,7 @@ simulation.set_optimization(
     ms_max_avail_diameter=ms_max_available_diameter,
     phase_mask_init_size=output_fiber_core_diameter/3,
     opt_max_eval=opt_max_eval,
+    conic_filter_radius=1.5e-6,    
 )
 
 simulation.run()
