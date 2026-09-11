@@ -1,3 +1,4 @@
+from kiwisolver import Constraint
 import numpy as np
 import matplotlib.pyplot as plt
 plt.rcParams.update({'font.size': 14})
@@ -64,11 +65,13 @@ def make_1Dplot_of(x_axis,y_axis,plot_zoom_x,save_name="plot_1D",) -> None:
 
 class SpaceGrid:
     '''
+    Class representing the spatial grid for the simulation.
+    Spatial dimensions are intended to be measured in micrometers [um].
     '''
     def __init__(self, side_pixels: int, unit_cell_pitch: float, prop_distances: np.ndarray, materials_refr_index: np.ndarray, xy_symmetry=False):
         self.Nx = side_pixels#for the moment we consider only square grids
         self.Ny = side_pixels
-        self.unit_cell_pitch = unit_cell_pitch
+        self.unit_cell_pitch = unit_cell_pitch * 1e-6
         self.nx = (self.Nx - 1) // 2
         self.ny = (self.Ny - 1) // 2
         self.xy_symmetry = xy_symmetry
@@ -86,7 +89,7 @@ class SpaceGrid:
         self.X, self.Y = np.meshgrid(self.xs, self.ys)
         self.rho = np.sqrt(self.X**2 + self.Y**2)
         self.sampling_period = self.unit_cell_pitch
-        self.d = prop_distances
+        self.d = prop_distances * 1e-6
 
         self.nm = 1e-9
         self.m_to_nm = 1e9
@@ -158,13 +161,12 @@ class SpaceGrid:
         return self.rho
     
 class Field:
-    def __init__(self, input_field: np.ndarray, wavelength: float, space_grid: SpaceGrid, center=(0,0)):
-        self.center = center
+    def __init__(self, input_field: np.ndarray, wavelength: float, space_grid: SpaceGrid, center: np.ndarray = np.array([0,0])):
+        self.center = center * 1e-6
         self.space_grid = space_grid
         self.input_field = self._shift_field(input_field)
-        self.wavelength = wavelength
-        
-        
+        self.wavelength = wavelength * 1e-6
+
         if self.input_field.shape != self.space_grid.get_grid_shape():
             raise ValueError("Input field must have the same shape as the space grid it is applied onto.")
 
@@ -195,7 +197,7 @@ class Field:
                        save_name)
 
 class Source(Field):
-    def __init__(self, input_field: np.ndarray | str, wavelength: float, space_grid: SpaceGrid, wvl_unit_measure = 1, field_norm = False, center = (0,0)):
+    def __init__(self, input_field: np.ndarray | str, wavelength: float, space_grid: SpaceGrid, field_norm = False, center: np.ndarray = np.array([0,0])):
         if isinstance(input_field, str):
             input_field_to_constr = np.load(input_field)
             input_field_shape = input_field_to_constr.shape
@@ -206,7 +208,7 @@ class Source(Field):
         if field_norm:
             input_field_to_constr = input_field_to_constr / np.sqrt(np.sum(np.abs(input_field_to_constr)**2))
 
-        super().__init__(input_field_to_constr, wavelength * wvl_unit_measure, space_grid, center=center)
+        super().__init__(input_field_to_constr, wavelength, space_grid, center=center)
         self.type = "source"
 
     def get_type(self):
@@ -236,7 +238,12 @@ class GaussianBeam():
         return self.space_grid
 
 class Target(Field):
-    def __init__(self, input_field: np.ndarray | str | Field ,associated_source: Source, wavelength: float, space_grid: SpaceGrid, wvl_unit_measure = 1, field_norm = False, center = (0,0)):
+    def __init__(self, input_field: np.ndarray | str | Field ,
+                 associated_source: Source, 
+                 wavelength: float, 
+                 space_grid: SpaceGrid, 
+                 field_norm = False, 
+                 center = np.array([0,0])):
         if isinstance(input_field, str):
             input_field_to_constr = np.load(input_field)
             input_field_shape = input_field_to_constr.shape
@@ -247,10 +254,10 @@ class Target(Field):
         if field_norm:
             input_field_to_constr = input_field_to_constr / np.sqrt(np.sum(np.abs(input_field_to_constr)**2))
 
-        super().__init__(input_field_to_constr, wavelength * wvl_unit_measure, space_grid, center=center)
+        super().__init__(input_field_to_constr, wavelength, space_grid, center=center)
         self.type = "target"
 
-        if associated_source.get_wavelength() != wavelength * wvl_unit_measure:
+        if associated_source.get_wavelength() != self.get_wavelength():
             raise ValueError("Associated source must have the same wavelength as the target.")
         else:
             self.associated_source = associated_source
@@ -297,7 +304,7 @@ class Simulation:
         self.sources = sources
         self.targets = targets
         self.space_grid = space_grid
-        self.central_wavelength = central_wavelength #central_wavelength parameter has little sense to exist. Revise
+        self.central_wavelength = central_wavelength * 1e6 #central_wavelength parameter has little sense to exist. Revise
 
         self.operating_wavelength = self.central_wavelength #initially, the operating_wavelength is the central wavelength
         self.lda_vector = [self.operating_wavelength / n for n in self.space_grid.get_materials_refr_index()]
@@ -349,36 +356,49 @@ class Simulation:
         pyfftw.interfaces.cache.disable()
         pyfftw.config.PLANNER_EFFORT = planner_effort
 
-    def set_optimization(self, opt_param_min, opt_param_max, ms_max_avail_diameter, phase_mask_init_size, opt_max_eval, conic_filter_radius = None, results_while_solving=True, custom_mask = None):
+    def set_optimization(self, 
+                         opt_param_min, 
+                         opt_param_max, 
+                         ms_max_avail_diameter, 
+                         phase_mask_init_size, 
+                         opt_max_eval, 
+                         conic_filter_radius = None, 
+                         results_while_solving=True, 
+                         custom_mask = None, 
+                         strategy = 'mean',
+                         save_results = True):
         '''
         Sets the optimization parameters for the simulation.
+        Arguments related to physical dimensions are expected to be in micrometers [um].
         Args:
             optimization_params (dict): A dictionary containing optimization parameters.
         '''
         self.is_optimization_set = True
-        #self.optimization_params = optimization_params
         self.iter_num = [0]
         self.norm_phase_min = opt_param_min
         self.norm_phase_max = opt_param_max
-        self.ms_max_avail_diameter = ms_max_avail_diameter
-        self.phase_mask_init_size = phase_mask_init_size
+        self.ms_max_avail_diameter = ms_max_avail_diameter * 1e-6
+        self.phase_mask_init_size = phase_mask_init_size * 1e-6
         self.opt_max_eval = opt_max_eval
         self.results_while_solving = results_while_solving
         self.custom_mask = custom_mask #future: one might be able to directly pass a custom mask
+        self.strategy = strategy
+        self.save_results = save_results
+
         if conic_filter_radius is None:
             self.use_filtering = False
         else:
             self.use_filtering = True
             self.filter_radius = None
-            
+
         if self.use_filtering:
-            self.filter_radius = conic_filter_radius
+            self.filter_radius = conic_filter_radius * 1e-6
             filtered_phase_mask_1 = self._phase_filter(self.phase_mask[:self.space_grid.get_S()])
             filtered_phase_mask_2 = self._phase_filter(self.phase_mask[self.space_grid.get_S():])
             self.filtered_phase_mask = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
         else:
             self.filtered_phase_mask = self.phase_mask
-        
+
         mask_upper_bounds = self.norm_phase_max * np.where( self.space_grid.get_X().flatten()**2 + self.space_grid.get_Y().flatten()**2 < (self.ms_max_avail_diameter/2)**2, 1, 0)
         mask_upper_bounds_full = np.concatenate((mask_upper_bounds, mask_upper_bounds),axis=0)
         mask_lower_bounds_full = np.zeros_like(mask_upper_bounds_full)
@@ -393,12 +413,17 @@ class Simulation:
             self.chosen_mask_upper_bounds = mask_upper_bounds_full
             self.chosen_mask_lower_bounds = mask_lower_bounds_full
 
-        
+        self._solver_init()
+
+
     def get_sources(self):
         return self.sources
 
     def get_targets(self):
         return self.targets
+
+    def get_num_targets(self):
+        return len(self.targets)
 
     def get_space_grid(self):
         return self.space_grid
@@ -539,13 +564,14 @@ class Simulation:
         return npa.arctan2(phase_mask_filtered_sin, phase_mask_filtered_cos)
 
     def _forward_propagate(self, source_object: Source):
-
+        #source field
         source_to_propagate = source_object.get_field()
 
         self.fft_input_array[:,:] = np.fft.ifftshift(source_to_propagate.reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny())))
         self.fft_operator()
         self.ifft_input_array[:,:] = self.fft_operator.output_array * self.P_nat[0]
         self.ifft_operator()
+        #field before MS1
         self.intermediate_fields[0] = np.fft.fftshift(self.ifft_operator.output_array)
         input_field = self.intermediate_fields[0].flatten()
 
@@ -553,6 +579,7 @@ class Simulation:
         self.fft_operator()
         self.ifft_input_array[:,:] = self.fft_operator.output_array * self.P_nat[1] #element wise product
         self.ifft_operator()
+        #field before MS2
         self.intermediate_fields[1] = np.fft.fftshift(self.ifft_operator.output_array.copy())
         #print("Field intensity after first phase mask and propagation: %.4e" % np.sum(np.abs(self.intermediate_fields[0])**2))
 
@@ -560,6 +587,7 @@ class Simulation:
         self.fft_operator()
         self.ifft_input_array[:,:] = self.fft_operator.output_array * self.P_nat[2] #element wise product
         self.ifft_operator()
+        #output field
         self.intermediate_fields[2] = np.fft.fftshift(self.ifft_operator.output_array.copy())
 
         self.output_field = self.intermediate_fields[-1].flatten()
@@ -609,7 +637,9 @@ class Simulation:
         return grad_C_phi_1, grad_C_phi_2
 
     def _value_and_grad(self, target):
+        '''
 
+        '''
         source = target.get_associated_source()
         wavelength = source.get_wavelength()
 
@@ -640,7 +670,26 @@ class Simulation:
 
         return w_full.flatten()
 
-    def _cost_fun(self, x, grad):
+    def _epigraph_constraint(self, result, epigraph_and_weights, gradient)->None:
+        '''
+        Constraint function for the epigraph formulation. 
+        Check nlopt documentation about Vector-valued constraints for additional details.
+        
+        Args:
+            result: 1D array, modified in place, with the results of this constraint
+                evaluation. Dimensionality should match the number of constraints.
+        
+            epigraph_and_weights: 1D array of epigraph (first element) and 
+                design weights (remaining elements)
+            
+            gradient: a 2D array of gradients, modified in place, of the constraint function with respect to the design weights.
+            Shape should be mxn, where m is the number of constraints and n is the number of design weights.
+
+        '''
+        print("evaluating epigraph constraint")
+        epigraph = epigraph_and_weights[0]
+        x = epigraph_and_weights[1:]
+
         if self.space_grid.xy_symmetry:
             ms1_first_quadrant = x[:self.space_grid.get_dof()//2].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
             ms2_first_quadrant = x[self.space_grid.get_dof()//2:].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
@@ -654,13 +703,100 @@ class Simulation:
 
         self.w_norm[:] = all_ms
         self.phase_mask[:] = self._phase_given_w(self.w_norm)
-        phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
-        phase_mask_2 = self.phase_mask[self.space_grid.get_S():]
+
         if self.use_filtering:
+            phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
+            phase_mask_2 = self.phase_mask[self.space_grid.get_S():]
             filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
             filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
 
-            self.filtered_phase_mask[:] = npa.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
+            self.filtered_phase_mask[:] = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
+        else:
+            self.filtered_phase_mask[:] = self.phase_mask
+
+        #after the phase masks are set, we need to compute value and gradients for each target
+        grads_matrix = np.zeros((len(self.targets), self.space_grid.get_dof()))
+        results_array = np.zeros(len(self.targets))
+
+        for idx, target in enumerate(self.targets):
+
+            C, full_grad_1, full_grad_2 = self._value_and_grad(target) 
+            #minus sign required because the constraint is in the form of f - t < 0 and we minimize the epigraph t
+            results_array[idx] = - C 
+
+            if self.use_filtering:
+                jac_grad_1 = tensor_jacobian_product(self._phase_filter)(phase_mask_1, full_grad_1)
+                print("jac 1 done")
+                jac_grad_2 = tensor_jacobian_product(self._phase_filter)(phase_mask_2, full_grad_2)
+                print("jac 2 done")
+            else:
+                jac_grad_1 = full_grad_1
+                jac_grad_2 = full_grad_2
+
+            if self.space_grid.xy_symmetry:
+                jac_grad_1_symm = self._reduce_symmetrized_gradient(jac_grad_1)
+                jac_grad_2_symm = self._reduce_symmetrized_gradient(jac_grad_2)
+                jac_grad = np.concatenate((jac_grad_1_symm, jac_grad_2_symm), axis=0)
+            else:
+                jac_grad = np.concatenate((jac_grad_1, jac_grad_2),axis=0)
+
+            grads_matrix[idx, :] = jac_grad
+
+        result[:] = results_array - epigraph
+
+        if gradient.size > 0:
+            gradient[:,0] = -1
+            gradient[:,1:] = - grads_matrix * 2 * np.pi
+
+
+    def _obj_fun(self, epigraph_and_weights, grad):
+        ''' Objective function for the epigraph formulation
+            
+            Args:
+                epigraph_and_weights: 1D array of epigraph (first element) and 
+                    design weights (remaining elements)
+                grad: gradient of the objective function with respect to the design weights, modified in place
+            Returns:
+                The scalar epigraph variable (the objective function)
+        '''
+
+        epigraph = epigraph_and_weights[0]
+
+        if grad.size > 0:
+            grad[0] = 1
+            grad[1:] = 0
+
+        self.iter_num[0] = self.iter_num[0] + 1
+        self.opt_history.append(epigraph)
+
+        self._plot_history()
+        self.iter_num[:] += [self.iter_num[0]+1]
+        
+        return epigraph
+
+    def _cost_fun(self, x, grad):
+        self.iter_num[0] = self.iter_num[0] + 1
+        if self.space_grid.xy_symmetry:
+            ms1_first_quadrant = x[:self.space_grid.get_dof()//2].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
+            ms2_first_quadrant = x[self.space_grid.get_dof()//2:].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
+            ms1 = self._expand_symmetrize(ms1_first_quadrant)
+            ms2 = self._expand_symmetrize(ms2_first_quadrant)
+        else:
+            ms1 = x[:self.space_grid.get_dof()//2]
+            ms2 = x[self.space_grid.get_dof()//2:]
+
+        all_ms = np.concatenate((ms1, ms2))
+
+        self.w_norm[:] = all_ms
+        self.phase_mask[:] = self._phase_given_w(self.w_norm)
+        
+        if self.use_filtering:
+            phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
+            phase_mask_2 = self.phase_mask[self.space_grid.get_S():]
+            filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
+            filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
+
+            self.filtered_phase_mask[:] = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
         else:
             self.filtered_phase_mask[:] = self.phase_mask
 
@@ -674,8 +810,12 @@ class Simulation:
 
             C_all_wavelengths.append(C)
 
-            jac_grad_1 = tensor_jacobian_product(self._phase_filter)(phase_mask_1, full_grad_1)
-            jac_grad_2 = tensor_jacobian_product(self._phase_filter)(phase_mask_2, full_grad_2)
+            if self.use_filtering:
+                jac_grad_1 = tensor_jacobian_product(self._phase_filter)(phase_mask_1, full_grad_1)
+                jac_grad_2 = tensor_jacobian_product(self._phase_filter)(phase_mask_2, full_grad_2)
+            else:
+                jac_grad_1 = full_grad_1
+                jac_grad_2 = full_grad_2
 
             if self.space_grid.xy_symmetry:
                 jac_grad_1_symm = self._reduce_symmetrized_gradient(jac_grad_1)
@@ -691,29 +831,63 @@ class Simulation:
 
         #the new cost function considers the average overlap across all wavelengths.
         self.opt_history.append(np.mean(C_all_wavelengths)) 
-        self.iter_num[0] += 1
+        self._plot_history()
+        return np.mean(C_all_wavelengths) 
+
+    def _plot_history(self):
+        '''
+        Utility function to plot the optimization history and the cost function
+        '''
         print("Iteration:", self.iter_num[0])
         if self.iter_num[0] % 5 == 0 and self.results_while_solving:
             fig, ax = plt.subplots()
             ax.plot(self.opt_history)
             ax.set_xlabel('Iteration')
-            ax.set_ylabel('Cost Function Value')
+            ax.set_ylabel('Epigraph value')
             ax.set_title('Optimization History')
             fig.tight_layout()
             fig.savefig(f"{self.results_folder}/optimization_history.pdf")
             plt.close(fig)
 
-            #make a plot of the cost function values across 
-            # all wavelengths for this iteration
-            fig, ax = plt.subplots()
-            ax.plot(self.get_wvl_all_targets(unit_measure=self.space_grid.m_to_nm), C_all_wavelengths, marker='o')
-            ax.set_xlabel(f'Wavelength [nm]')
-            ax.set_ylabel('Cost function value')
-            fig.tight_layout()
-            fig.savefig(f"{self.results_folder}/cost_function_across_wavelengths.pdf")
-            plt.close(fig)
+    def _solver_init(self):
+        '''
+        This method sets up the optimizer based on the chosen strategy.
 
-        return np.mean(C_all_wavelengths) 
+        '''
+        if self.strategy == 'mean':
+            self.solver = nlopt.opt(nlopt.LD_CCSAQ, self.space_grid.get_dof())
+
+            self.solver.set_lower_bounds(self.chosen_mask_lower_bounds.flatten())
+            self.solver.set_upper_bounds(self.chosen_mask_upper_bounds.flatten())
+
+            self.solver.set_max_objective(self._cost_fun)
+            self.solver.set_maxeval(self.opt_max_eval)
+
+        elif self.strategy == 'epigraph':
+            self.solver = nlopt.opt(nlopt.LD_CCSAQ, self.space_grid.get_dof() + 1)
+            epigraph_and_weights_lower_bounds = np.insert(self.chosen_mask_lower_bounds.flatten(), 0, -np.inf)
+            epigraph_and_weights_upper_bounds = np.insert(self.chosen_mask_upper_bounds.flatten(), 0, np.inf)
+
+            self.solver.set_lower_bounds(epigraph_and_weights_lower_bounds)
+            self.solver.set_upper_bounds(epigraph_and_weights_upper_bounds)
+
+            self.solver.set_min_objective(self._obj_fun)
+            epigraph_tolerance = np.array([1e-4] * self.get_num_targets())
+            self.solver.add_inequality_mconstraint(
+                lambda result_, epigraph_and_weights_, grad_: self._epigraph_constraint(
+                    result_, 
+                    epigraph_and_weights_, 
+                    grad_
+                ),
+                epigraph_tolerance
+            )
+            self.solver.set_maxeval(self.opt_max_eval)
+        else:
+            raise ValueError(f"Unknown optimization strategy: {self.strategy}")
+        
+        self.solver.set_param("dual_ftol_rel", 1e-5)
+        self.solver.set_param("inner_maxeval", 30)
+        self.solver.set_param("verbosity", 0)
 
     def _export_results(self):
         '''
@@ -727,18 +901,22 @@ class Simulation:
             output_field.append(self.intermediate_fields[-1])
 
             np.save(f"{self.results_folder}/output_fields_{i}.npy", output_field[-1])
-            make_2Dplot_of(output_field[-1], self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=self.get_ms_max_avail_diameter()/2, plot_zoom_y=self.get_ms_max_avail_diameter()/2, choose_quantity="amplitude", save_name=f"{self.results_folder}/output_fields_{i}_plot")
-            make_2Dplot_of(output_field[-1], self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=self.get_ms_max_avail_diameter()/2, plot_zoom_y=self.get_ms_max_avail_diameter()/2, choose_quantity="phase", save_name=f"{self.results_folder}/output_fields_{i}_phase_plot")
+            make_2Dplot_of(output_field[-1], self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="amplitude", save_name=f"{self.results_folder}/output_fields_{i}_plot")
+            make_2Dplot_of(output_field[-1], self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="phase", save_name=f"{self.results_folder}/output_fields_{i}_phase_plot")
 
         #phase masks
         phase_mask_1 = self._phase_given_w(self.w_norm[:self.space_grid.get_S()]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
         phase_mask_2 = self._phase_given_w(self.w_norm[self.space_grid.get_S():]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
-        filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
-        filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
-        make_2Dplot_of(phase_mask_1, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=self.get_ms_max_avail_diameter()/2, plot_zoom_y=self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/phase_mask_1_plot")
-        make_2Dplot_of(phase_mask_2, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=self.get_ms_max_avail_diameter()/2, plot_zoom_y=self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/phase_mask_2_plot")
-        make_2Dplot_of(filtered_phase_mask_1, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=self.get_ms_max_avail_diameter()/2, plot_zoom_y=self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/filtered_phase_mask_1_plot")
-        make_2Dplot_of(filtered_phase_mask_2, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=self.get_ms_max_avail_diameter()/2, plot_zoom_y=self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/filtered_phase_mask_2_plot")
+        if self.use_filtering:
+            filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
+            filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
+        else:
+            filtered_phase_mask_1 = phase_mask_1
+            filtered_phase_mask_2 = phase_mask_2
+        make_2Dplot_of(phase_mask_1, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/phase_mask_1_plot")
+        make_2Dplot_of(phase_mask_2, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/phase_mask_2_plot")
+        make_2Dplot_of(filtered_phase_mask_1, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/filtered_phase_mask_1_plot")
+        make_2Dplot_of(filtered_phase_mask_2, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/filtered_phase_mask_2_plot")
 
         np.save(f"{self.results_folder}/optimized_phase_mask_1.npy", phase_mask_1)
         np.save(f"{self.results_folder}/optimized_phase_mask_2.npy", phase_mask_2)
@@ -779,26 +957,59 @@ class Simulation:
             print("Starting optimization...")
             self._initialize_phase_masks()
             #initialize nlopt solver
-            solver = nlopt.opt(nlopt.LD_CCSAQ, self.space_grid.get_dof())
-            solver.set_lower_bounds(self.chosen_mask_lower_bounds.flatten())
-            solver.set_upper_bounds(self.chosen_mask_upper_bounds.flatten())
-            solver.set_max_objective(self._cost_fun)
-            solver.set_maxeval(self.opt_max_eval)
-            solver.set_param("dual_ftol_rel", 1e-7)
-            solver.set_param("verbosity",0)
 
             if self.space_grid.xy_symmetry:
-                self.w_norm_symm[:] = solver.optimize(self.w_norm_symm)
+                if self.strategy == 'epigraph':
+                    epigraph_w_norm_symm = self.solver.optimize(np.insert(self.w_norm_symm, 0, 0))
+                    self.w_norm_symm[:] = epigraph_w_norm_symm[1:]
+                elif self.strategy == 'mean':
+                    self.w_norm_symm[:] = self.solver.optimize(self.w_norm_symm)
+                else:
+                    raise ValueError(f"Unknown strategy: {self.strategy}")
                 self.is_optimized_flag = True
-                self.best_opt_val = solver.last_optimum_value()
+                self.best_opt_val = self.solver.last_optimum_value()
                 self.w_norm[:self.space_grid.get_S()] = self._expand_symmetrize(self.w_norm_symm[:self.space_grid.get_dof()//2])
                 self.w_norm[self.space_grid.get_S():] = self._expand_symmetrize(self.w_norm_symm[self.space_grid.get_dof()//2:])
-            else:
-                self.w_norm[:] = solver.optimize(self.w_norm)
-                self.is_optimized_flag = True
-                self.best_opt_val = solver.last_optimum_value()
+                self.phase_mask[:] = self._phase_given_w(self.w_norm)
 
-            self._export_results()
+                if self.use_filtering:
+                    phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
+                    phase_mask_2 = self.phase_mask[self.space_grid.get_S():]
+                    filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
+                    filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
+                    self.filtered_phase_mask[:] = np.concatenate([filtered_phase_mask_1, filtered_phase_mask_2])
+                else:
+                    self.filtered_phase_mask[:] = self.phase_mask
+                
+                self.is_optimization_set = True
+                self.best_opt_val = self.solver.last_optimum_value()
+            else:
+                if self.strategy == 'epigraph':
+                    self.epigraph_w_norm = np.insert(self.w_norm, 0, 0)
+                    self.epigraph_w_norm[:] = self.solver.optimize(self.epigraph_w_norm)
+                    self.w_norm[:] = self.epigraph_w_norm[1:]
+                elif self.strategy == 'mean':
+                    self.w_norm[:] = self.solver.optimize(self.w_norm)
+                else:
+                    raise ValueError(f"Unknown strategy: {self.strategy}")
+                self.phase_mask[:] = self._phase_given_w(self.w_norm)
+                
+                if self.use_filtering:
+                    phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
+                    phase_mask_2 = self.phase_mask[self.space_grid.get_S():]
+                    filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
+                    filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
+                    self.filtered_phase_mask[:] = np.concatenate([filtered_phase_mask_1, filtered_phase_mask_2])
+                else:
+                    self.filtered_phase_mask[:] = self.phase_mask
+                
+                self.is_optimized_flag = True
+                self.best_opt_val = self.solver.last_optimum_value()
+
+            if self.save_results:
+                self._export_results()
+
+            return self.best_opt_val
         else:
             raise RuntimeError("Optimization settings have not been specified.")
         

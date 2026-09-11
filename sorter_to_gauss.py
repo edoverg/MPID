@@ -6,20 +6,20 @@ if not os.path.exists("results"):
 
 #Space grid definition
 N = 1025
-unit_cell_pitch = 700e-9
+unit_cell_pitch = 0.700 #i.e., 700 [nm]
 
 n0 = 1.45
 n1 = 1.0
 n2 = 1.45
 mat_refr_index = np.array([n0, n1, n2])
 
-d0 = 476e-6 #propagation distance: source - MS1 [m]
-d1 = 510e-6 #propagation distance: MS1 - MS2 [m]
-d2 = d0 #propagation distance: MS2 - target [m]
+d0 = 476 #propagation distance: source - MS1 [um]
+d1 = 510 #propagation distance: MS1 - MS2 [um]
+d2 = d0 #propagation distance: MS2 - target [um]
 d = np.array([d0, d1, d2])
 
-ms_max_available_diameter = 122e-6 #[um]
-output_fiber_core_diameter = 19e-6 #[um]
+ms_max_available_diameter = 122 #[um]
+output_fiber_core_diameter = 19 #[um]
 opt_max_eval = 140
 
 space_grid = pid.SpaceGrid(
@@ -29,7 +29,7 @@ space_grid = pid.SpaceGrid(
     materials_refr_index=mat_refr_index,
 )
 
-wavelength = 1.55e-6
+wavelength = 1.55
 
 #define the sources
 source1 = pid.Source(input_field='fiber_modes/LP11_field_distribution_lda_1550_N_1025.npy', 
@@ -43,13 +43,13 @@ source2 = pid.Source(input_field='fiber_modes/LP21_field_distribution_lda_1550_N
 
 
 target = pid.Target(input_field='fiber_modes/LP01_field_distribution_lda_1550_N_1025.npy', 
-                    center=(20e-6,0),
+                    center=np.array([20,0]),
                     associated_source=source1, 
                     wavelength=wavelength, 
                     space_grid=space_grid, 
                     field_norm=True)
 target2 = pid.Target(input_field='fiber_modes/LP01_field_distribution_lda_1550_N_1025.npy', 
-                     center=(-20e-6,0),
+                     center=np.array([-20,0]),
                      associated_source=source2, 
                      wavelength=wavelength, 
                      space_grid=space_grid, 
@@ -69,15 +69,17 @@ sim = pid.Simulation(
     n_cpu=1
 )
 
-opt_param_min = 0
-opt_param_max = 1
+opt_param_min = 0.0
+opt_param_max = 1.0
 
 sim.set_optimization(opt_param_min=opt_param_min, 
                      opt_param_max=opt_param_max,
                      ms_max_avail_diameter=ms_max_available_diameter,
                      phase_mask_init_size=output_fiber_core_diameter,
                      opt_max_eval=opt_max_eval,
-                     conic_filter_radius=1.5e-6)
+                     strategy = 'mean',
+                     conic_filter_radius = 1.0, #i.e. 700 [nm]
+                    )
 
 sim.run()
 
