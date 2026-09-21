@@ -34,11 +34,11 @@ wavelength = 1.55
 #define the sources
 source1 = pid.Source(input_field='fiber_modes/LP11_field_distribution_lda_1550_N_1025.npy', 
                      wavelength=wavelength, 
-                     space_grid=space_grid, 
+                     #space_grid=space_grid, 
                      field_norm=True)
 source2 = pid.Source(input_field='fiber_modes/LP21_field_distribution_lda_1550_N_1025.npy', 
                      wavelength=wavelength, 
-                     space_grid=space_grid, 
+                     #space_grid=space_grid, 
                      field_norm=True)
 
 
@@ -46,20 +46,20 @@ target = pid.Target(input_field='fiber_modes/LP01_field_distribution_lda_1550_N_
                     center=np.array([20,0]),
                     associated_source=source1, 
                     wavelength=wavelength, 
-                    space_grid=space_grid, 
+                    #space_grid=space_grid, 
                     field_norm=True)
 target2 = pid.Target(input_field='fiber_modes/LP01_field_distribution_lda_1550_N_1025.npy', 
                      center=np.array([-20,0]),
                      associated_source=source2, 
                      wavelength=wavelength, 
-                     space_grid=space_grid, 
+                     #space_grid=space_grid, 
                      field_norm=True) 
 
 #make a plot of sources and targets
-target.plot2D(plot_zoom_x=100, plot_zoom_y=100, choose_quantity="amplitude", save_name="results/target_plot")
-target2.plot2D(plot_zoom_x=100, plot_zoom_y=100, choose_quantity="amplitude", save_name="results/target2_plot")
-source1.plot2D(plot_zoom_x=100, plot_zoom_y=100, choose_quantity="amplitude", save_name="results/source1_plot")
-source2.plot2D(plot_zoom_x=100, plot_zoom_y=100, choose_quantity="amplitude", save_name="results/source2_plot")
+#target.plot2D(plot_zoom_x=100, plot_zoom_y=100, choose_quantity="amplitude", save_name="results/target_plot")
+#target2.plot2D(plot_zoom_x=100, plot_zoom_y=100, choose_quantity="amplitude", save_name="results/target2_plot")
+#source1.plot2D(plot_zoom_x=100, plot_zoom_y=100, choose_quantity="amplitude", save_name="results/source1_plot")
+#source2.plot2D(plot_zoom_x=100, plot_zoom_y=100, choose_quantity="amplitude", save_name="results/source2_plot")
 
 sim = pid.Simulation(
     sources=[source1, source2],
@@ -78,7 +78,7 @@ sim.set_optimization(opt_param_min=opt_param_min,
                      phase_mask_init_size=output_fiber_core_diameter,
                      opt_max_eval=opt_max_eval,
                      strategy = 'mean',
-                     conic_filter_radius = 1.0, #i.e. 700 [nm]
+                     #conic_filter_radius = 1.0, #i.e. 700 [nm]
                     )
 
 sim.run()
