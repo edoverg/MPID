@@ -75,27 +75,6 @@ class SpaceGrid:
     Spatial dimensions are intended to be measured in micrometers [um].
     '''
     def __init__(self, side_pixels: int, unit_cell_pitch: float, materials_refr_index: np.ndarray, prop_distances: np.ndarray = None, xy_symmetry=False):
-        self.Nx = side_pixels#for the moment we consider only square grids
-        self.Ny = side_pixels
-        self.unit_cell_pitch = unit_cell_pitch * 1e-6
-        self.nx = (self.Nx - 1) // 2
-        self.ny = (self.Ny - 1) // 2
-        self.xy_symmetry = xy_symmetry
-        self.S = self.Nx * self.Ny
-
-        if self.xy_symmetry:
-            self.dof = 2*((self.nx + 1)**2)
-        else:
-            self.dof = 2 * self.S
-
-        self.size_x = self.unit_cell_pitch * self.Nx
-        self.size_y = self.unit_cell_pitch * self.Ny
-        self.xs = np.arange(-self.Nx//2+1, self.Nx//2+1) * (self.size_x / self.Nx)
-        self.ys = np.arange(-self.Ny//2+1, self.Ny//2+1) * (self.size_y / self.Ny)
-        self.X, self.Y = np.meshgrid(self.xs, self.ys)
-        self.rho = np.sqrt(self.X**2 + self.Y**2)
-        self.sampling_period = self.unit_cell_pitch
-        
         if prop_distances is None:
             self.propagation_distances_set = False
             self.d = None
@@ -105,6 +84,40 @@ class SpaceGrid:
         
         self.materials_refr_index = materials_refr_index
 
+        self.num_phase_masks = 0
+        if self.propagation_distances_set:
+            self.num_phase_masks = len(self.d) - 1
+
+        #determine the number of phase masks required based on the number of propagation distances
+        self.num_phase_masks = 0
+        if self.propagation_distances_set:
+            self.num_phase_masks = len(self.d) - 1
+        
+        self.Nx = side_pixels#for the moment we consider only square grids
+        self.Ny = side_pixels
+        self.unit_cell_pitch = unit_cell_pitch * 1e-6 # convert to [m]
+        self.nx = (self.Nx - 1) // 2
+        self.ny = (self.Ny - 1) // 2
+        self.xy_symmetry = xy_symmetry
+        self.S = self.Nx * self.Ny
+
+        if self.xy_symmetry:
+            self.dof = self.num_phase_masks * ((self.nx + 1)**2)
+            self.S_symm = (self.nx + 1)**2
+        else:
+            self.dof = self.num_phase_masks * self.S
+
+        self.size_x = self.unit_cell_pitch * self.Nx
+        self.size_y = self.unit_cell_pitch * self.Ny
+        self.xs = np.arange(-self.Nx//2+1, self.Nx//2+1) * (self.size_x / self.Nx)
+        self.ys = np.arange(-self.Ny//2+1, self.Ny//2+1) * (self.size_y / self.Ny)
+        self.X, self.Y = np.meshgrid(self.xs, self.ys)
+        self.rho = np.sqrt(self.X**2 + self.Y**2)
+        self.sampling_period = self.unit_cell_pitch
+
+    def get_num_phase_masks(self):
+        return self.num_phase_masks
+        
     def get_grid_shape(self):
         return (self.Nx, self.Ny)
 
@@ -121,10 +134,16 @@ class SpaceGrid:
         return self.sampling_period
 
     def get_resolution(self):
-        return self.unit_cell_pitch
+        '''
+        Returns the resolution of the spatial grid in micrometers [um].
+        '''
+        return self.unit_cell_pitch * 1e6 # convert to [um]
 
-    def get_unit_cell_pitch(self):
-        return self.unit_cell_pitch
+    def get_unit_cell_pitch(self) -> float:
+        '''
+        Returns the unit cell pitch of the spatial grid in micrometers [um].
+        '''
+        return self.unit_cell_pitch * 1e6 # convert back to [um]
 
     def get_size_x(self):
         return self.size_x
@@ -149,6 +168,11 @@ class SpaceGrid:
 
     def get_S(self):
         return self.S
+
+    def get_S_symm(self):
+        if not self.xy_symmetry:
+            raise ValueError("S_symm is only defined when xy_symmetry is set True")
+        return self.S_symm
 
     def get_X(self):
         return self.X
@@ -320,7 +344,7 @@ class Simulation:
 
         if space_grid is not None:
             self.set_space_grid(space_grid)
-        
+
         self._configure_fftw(self.n_cpu)
         
         self.is_optimization_set = False
@@ -429,6 +453,9 @@ class Simulation:
     def _phase_given_w(self, input_normalized_phase):
         return 2 * np.pi * input_normalized_phase
 
+    def _w_given_phase(self, input_phase):
+        return input_phase / (2 * np.pi)
+
     def _symmetrize(self, w):
         '''
         Takes an input array, which must be full in size, turns it into a 2D array, and symmetrizes it along the x and y axes.
@@ -467,7 +494,7 @@ class Simulation:
         target_Efields = [target.get_field(space_grid=self.space_grid, flatten=True) for target in self.targets]
         target_centers = [target.get_center() for target in self.targets]
 
-        self.w_norm = np.zeros((2*self.space_grid.get_S()))
+        self.w_norm = np.zeros((self.num_phase_masks*self.space_grid.get_S()))
 
         circular_mask_source = [self._build_circular_mask(source_center, self.phase_mask_init_size) for source_center in source_centers]
         circular_mask_target = [self._build_circular_mask(target_center, self.phase_mask_init_size) for target_center in target_centers]
@@ -483,17 +510,29 @@ class Simulation:
         self.w_norm[:self.space_grid.get_S()] = ((cumulated_source_phase + 2*np.pi) % (2*np.pi)) / (2*np.pi)
 
         #initialize mask on target side
-        cumulated_target_phase = np.zeros_like(self.w_norm[self.space_grid.get_S():])
+        cumulated_target_phase = np.zeros(self.space_grid.get_S())
         for _, target_phase in enumerate(target_pattern_phase):
             cumulated_target_phase += target_phase / (2 * np.pi) #normalize the target phase to be between 0 and 1
 
-        self.w_norm[self.space_grid.get_S():] = ((cumulated_target_phase + 2*np.pi) % (2*np.pi)) / (2*np.pi)
+        if self.num_phase_masks ==2:
+            self.w_norm[self.space_grid.get_S():] = ((cumulated_target_phase + 2*np.pi) % (2*np.pi)) / (2*np.pi)
+        elif self.num_phase_masks == 3:
+            self.w_norm[2*self.space_grid.get_S():] = ((cumulated_target_phase + 2*np.pi) % (2*np.pi)) / (2*np.pi)
+
         
         if self.space_grid.xy_symmetry:
-            w_norm_symm_1 = self._symmetrize(self.w_norm[:self.space_grid.get_S()])
-            w_norm_symm_2 = self._symmetrize(self.w_norm[self.space_grid.get_S():])
+            if self.num_phase_masks == 2:
+                w_norm_symm_1 = self._symmetrize(self.w_norm[:self.space_grid.get_S()])
+                w_norm_symm_2 = self._symmetrize(self.w_norm[self.space_grid.get_S():])
+            elif self.num_phase_masks == 3:
+                w_norm_symm_1 = self._symmetrize(self.w_norm[:self.space_grid.get_S()])
+                w_norm_symm_2 = self._symmetrize(self.w_norm[self.space_grid.get_S():2*self.space_grid.get_S()])
+                w_norm_symm_3 = self._symmetrize(self.w_norm[2*self.space_grid.get_S():])
 
-            self.w_norm_symm[:] = np.concatenate((w_norm_symm_1, w_norm_symm_2), axis=0)
+            if self.num_phase_masks == 2:
+                self.w_norm_symm[:] = np.concatenate((w_norm_symm_1, w_norm_symm_2), axis=0)
+            elif self.num_phase_masks == 3:
+                self.w_norm_symm[:] = np.concatenate((w_norm_symm_1, w_norm_symm_2, w_norm_symm_3), axis=0)
 
         self.phase_mask[:] = self._phase_given_w(self.w_norm)
                 
@@ -529,9 +568,19 @@ class Simulation:
         )
         return npa.arctan2(phase_mask_filtered_sin, phase_mask_filtered_cos)
 
-    def _forward_propagate(self, source_object: Source):
+    def _forward_propagate(self, source_object: Source, returns_field: bool = False):
         #source field
         source_to_propagate = source_object.get_field(space_grid=self.space_grid)
+
+        #we retrieve the phase masks by managing the filtered phase mask array
+        #depending on the number of phase masks, we will split the filtered phase mask array accordingly
+        if self.num_phase_masks == 2:
+            filtered_phase_mask_1 = self.filtered_phase_mask[:self.space_grid.get_S()]
+            filtered_phase_mask_2 = self.filtered_phase_mask[self.space_grid.get_S():]
+        elif self.num_phase_masks == 3:
+            filtered_phase_mask_1 = self.filtered_phase_mask[:self.space_grid.get_S()]
+            filtered_phase_mask_2 = self.filtered_phase_mask[self.space_grid.get_S():2*self.space_grid.get_S()]
+            filtered_phase_mask_3 = self.filtered_phase_mask[2*self.space_grid.get_S():]
 
         self.fft_input_array[:,:] = np.fft.ifftshift(source_to_propagate.reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny())))
         self.fft_operator()
@@ -545,7 +594,7 @@ class Simulation:
 
         input_field = self.intermediate_electric_fields[0].flatten()
 
-        self.fft_input_array[:,:] = np.fft.ifftshift((input_field * np.exp(1j * self.filtered_phase_mask[:self.space_grid.get_S()])).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny())))
+        self.fft_input_array[:,:] = np.fft.ifftshift((input_field * np.exp(1j * filtered_phase_mask_1)).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny())))
         self.fft_operator()
         self.ifft_input_array[:,:] = self.fft_operator.output_array * self.P_nat[1] #element wise product
         self.ifft_operator()
@@ -555,16 +604,35 @@ class Simulation:
 
         #print("Field intensity after first phase mask and propagation: %.4e" % np.sum(np.abs(self.intermediate_electric_fields[0])**2))
 
-        self.fft_input_array[:,:] = np.fft.ifftshift(np.fft.fftshift(self.ifft_operator.output_array) * np.exp(1j * self.filtered_phase_mask[self.space_grid.get_S():].reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))))
+        self.fft_input_array[:,:] = np.fft.ifftshift(np.fft.fftshift(self.ifft_operator.output_array) * np.exp(1j * filtered_phase_mask_2.reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))))
         self.fft_operator()
         self.ifft_input_array[:,:] = self.fft_operator.output_array * self.P_nat[2] #element wise product
         self.ifft_operator()
 
-        #output field
+        #output field if the number of phase masks is 2, otherwise this is the input field on MS3
         self.intermediate_electric_fields[2] = np.fft.fftshift(self.ifft_operator.output_array.copy())
 
-        self.output_field = self.intermediate_electric_fields[-1].flatten()
+        #if the number of phase masks is 2, stop here
+        if self.num_phase_masks == 2:
+            self.output_field = self.intermediate_electric_fields[-1].flatten()
+            if returns_field:
+                return self.output_field
+            else:
+                return None
 
+        self.fft_input_array[:,:] = np.fft.ifftshift(np.fft.fftshift(self.ifft_operator.output_array) * np.exp(1j * filtered_phase_mask_3.reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))))
+        self.fft_operator()
+        self.ifft_input_array[:,:] = self.fft_operator.output_array * self.P_nat[3] #element wise product
+        self.ifft_operator()
+
+        self.intermediate_electric_fields[3] = np.fft.fftshift(self.ifft_operator.output_array.copy())
+
+        self.output_field = self.intermediate_electric_fields[-1].flatten()        
+
+        if returns_field:
+            return self.output_field
+        else:
+            return None
         #make a plot of intermediate fields
         #for i, field in enumerate(self.intermediate_electric_fields):
         #    make_2Dplot_of(field, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=60, plot_zoom_y=60, choose_quantity="amplitude", save_name=f"results/intermediate_field_{i+1}_plot")
@@ -589,25 +657,58 @@ class Simulation:
         return g_2d[:self.space_grid.get_nx()+1, :self.space_grid.get_ny()+1].flatten()
 
     def _adjoint_propagate(self, target):
-        Phi_1_dagger = np.exp(-1j * self.filtered_phase_mask[:self.space_grid.get_S()]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
-        Phi_2_dagger = np.exp(-1j * self.filtered_phase_mask[self.space_grid.get_S():]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
+        #we need to manage the case of two or three phase masks by defining the associated filtered phase masks
+        if self.num_phase_masks == 2:
+            filtered_phase_mask_1 = self.filtered_phase_mask[:self.space_grid.get_S()]
+            filtered_phase_mask_2 = self.filtered_phase_mask[self.space_grid.get_S():]
+        elif self.num_phase_masks == 3:
+            filtered_phase_mask_1 = self.filtered_phase_mask[:self.space_grid.get_S()]
+            filtered_phase_mask_2 = self.filtered_phase_mask[self.space_grid.get_S():2*self.space_grid.get_S()]
+            filtered_phase_mask_3 = self.filtered_phase_mask[2*self.space_grid.get_S():]
 
+        Phi_dagger = []
+        Phi_1_dagger = np.exp(-1j * filtered_phase_mask_1).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
+        Phi_2_dagger = np.exp(-1j * filtered_phase_mask_2).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
+        Phi_dagger.append(Phi_1_dagger)
+        Phi_dagger.append(Phi_2_dagger)
+        if self.num_phase_masks == 3:
+            Phi_3_dagger = np.exp(-1j * filtered_phase_mask_3).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
+            Phi_dagger.append(Phi_3_dagger)
+
+
+        grad_C_phi = [None] * self.num_phase_masks
         #compute the adjoint source
-        self.fft_input_array[:,:] = np.fft.ifftshift(np.sum(self.intermediate_electric_fields[2] * np.conj(target.get_field(space_grid=self.space_grid))) * target.get_field(space_grid=self.space_grid))
-        self.fft_operator()
-        self.ifft_input_array[:,:] = self.fft_operator.output_array * self.P_dagger_nat[2]
-        self.ifft_operator()
-        self.fft_input_array[:,:] = np.fft.ifftshift(np.fft.fftshift(self.ifft_operator.output_array) * Phi_2_dagger)
-
-        grad_C_phi_2 = 2 * np.real(-1j * self.intermediate_electric_fields[1].conj() * np.fft.fftshift(self.fft_input_array)).flatten() 
-
-        self.fft_operator()
-        self.ifft_input_array[:,:] = self.fft_operator.output_array * self.P_dagger_nat[1] #element wise
-        self.ifft_operator()
-
-        grad_C_phi_1 = 2 * np.real(-1j * self.intermediate_electric_fields[0].conj() * np.fft.fftshift(self.ifft_operator.output_array) * Phi_1_dagger).flatten()
+        S = np.sum(self.intermediate_electric_fields[-1] * np.conj(target.get_field(space_grid=self.space_grid)))
+        a = S * target.get_field(space_grid=self.space_grid)
         
-        return grad_C_phi_1, grad_C_phi_2
+        self.fft_input_array[:,:] = np.fft.ifftshift(a)
+        self.fft_operator()
+        self.ifft_input_array[:,:] = self.fft_operator.output_array * self.P_dagger_nat[-1]
+        self.ifft_operator()
+        self.fft_input_array[:,:] = np.fft.ifftshift(np.fft.fftshift(self.ifft_operator.output_array) * Phi_dagger[-1])
+
+        grad_C_phi[-1] = 2 * np.real(-1j * self.intermediate_electric_fields[-2].conj() * np.fft.fftshift(self.fft_input_array)).flatten() 
+        #grad_C_phi_2 = 2 * np.real(-1j * self.intermediate_electric_fields[1].conj() * np.fft.fftshift(self.fft_input_array)).flatten() 
+
+        self.fft_operator()
+        self.ifft_input_array[:,:] = self.fft_operator.output_array * self.P_dagger_nat[-2] #element wise
+        self.ifft_operator()
+        self.fft_input_array[:,:] = np.fft.ifftshift(np.fft.fftshift(self.ifft_operator.output_array) * Phi_dagger[-2])
+
+        grad_C_phi[-2] = 2 * np.real(-1j * self.intermediate_electric_fields[-3].conj() * np.fft.fftshift(self.fft_input_array)).flatten()
+
+        if self.num_phase_masks == 2:
+            return grad_C_phi
+
+        self.fft_operator()
+        self.ifft_input_array[:,:] = self.fft_operator.output_array * self.P_dagger_nat[-3] #element wise
+        self.ifft_operator()
+        self.fft_input_array[:,:] = np.fft.ifftshift(np.fft.fftshift(self.ifft_operator.output_array) * Phi_dagger[-3])
+
+        grad_C_phi[-3] = 2 * np.real(-1j * self.intermediate_electric_fields[-4].conj() * np.fft.fftshift(self.fft_input_array)).flatten()
+
+        return grad_C_phi
+        #return grad_C_phi_1, grad_C_phi_2
 
     def _value_and_grad(self, target):
         '''
@@ -621,9 +722,9 @@ class Simulation:
         self._forward_propagate(source)
 
         C_s = np.real(np.abs(np.sum(self.output_field * np.conj(target.get_field(space_grid=self.space_grid, flatten=True)))) ** 2)
-        grad_C_phi_1, grad_C_phi_2 = self._adjoint_propagate(target)
+        grads = self._adjoint_propagate(target)
 
-        return C_s, grad_C_phi_1, grad_C_phi_2
+        return C_s, grads
 
     def _expand_symmetrize(self, w_symm):
         '''
@@ -661,28 +762,52 @@ class Simulation:
         print("evaluating epigraph constraint")
         epigraph = epigraph_and_weights[0]
         x = epigraph_and_weights[1:]
-
+        #we need to manage the number of phase masks, depending on the current object instance
         if self.space_grid.xy_symmetry:
-            ms1_first_quadrant = x[:self.space_grid.get_dof()//2].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
-            ms2_first_quadrant = x[self.space_grid.get_dof()//2:].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
-            ms1 = self._expand_symmetrize(ms1_first_quadrant)
-            ms2 = self._expand_symmetrize(ms2_first_quadrant)
+            if self.num_phase_masks == 2:
+                ms1_first_quadrant = x[:self.space_grid.get_S_symm()].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
+                ms2_first_quadrant = x[self.space_grid.get_S_symm():].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
+                ms1 = self._expand_symmetrize(ms1_first_quadrant)
+                ms2 = self._expand_symmetrize(ms2_first_quadrant)
+            elif self.num_phase_masks == 3:
+                ms1_first_quadrant = x[:self.space_grid.get_S_symm()].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
+                ms2_first_quadrant = x[self.space_grid.get_S_symm(): 2*self.space_grid.get_S_symm()].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
+                ms3_first_quadrant = x[2*self.space_grid.get_S_symm():].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
+                ms1 = self._expand_symmetrize(ms1_first_quadrant)
+                ms2 = self._expand_symmetrize(ms2_first_quadrant)
+                ms3 = self._expand_symmetrize(ms3_first_quadrant)
         else:
-            ms1 = x[:self.space_grid.get_dof()//2]
-            ms2 = x[self.space_grid.get_dof()//2:]
+            if self.num_phase_masks == 2:
+                ms1 = x[:self.space_grid.get_S()]
+                ms2 = x[self.space_grid.get_S():]
+            elif self.num_phase_masks == 3:
+                ms1 = x[:self.space_grid.get_S()]
+                ms2 = x[self.space_grid.get_S(): 2*self.space_grid.get_S()]
+                ms3 = x[2*self.space_grid.get_S():]
 
-        all_ms = np.concatenate((ms1, ms2))
+        if self.num_phase_masks == 2:
+            all_ms = np.concatenate((ms1, ms2))
+        elif self.num_phase_masks == 3:
+            all_ms = np.concatenate((ms1, ms2, ms3))
 
         self.w_norm[:] = all_ms
         self.phase_mask[:] = self._phase_given_w(self.w_norm)
 
         if self.use_filtering:
-            phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
-            phase_mask_2 = self.phase_mask[self.space_grid.get_S():]
-            filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
-            filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
-
-            self.filtered_phase_mask[:] = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
+            if self.num_phase_masks == 2:
+                phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
+                phase_mask_2 = self.phase_mask[self.space_grid.get_S():]
+                filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
+                filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
+                self.filtered_phase_mask[:] = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
+            elif self.num_phase_masks == 3:
+                phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
+                phase_mask_2 = self.phase_mask[self.space_grid.get_S(): 2*self.space_grid.get_S()]
+                phase_mask_3 = self.phase_mask[2*self.space_grid.get_S():]
+                filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
+                filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
+                filtered_phase_mask_3 = self._phase_filter(phase_mask_3)
+                self.filtered_phase_mask[:] = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2, filtered_phase_mask_3))
         else:
             self.filtered_phase_mask[:] = self.phase_mask
 
@@ -692,25 +817,45 @@ class Simulation:
 
         for idx, target in enumerate(self.targets):
 
-            C, full_grad_1, full_grad_2 = self._value_and_grad(target) 
+            C, full_grads = self._value_and_grad(target) 
             #minus sign required because the constraint is in the form of f - t < 0 and we minimize the epigraph t
             results_array[idx] = - C 
 
             if self.use_filtering:
-                jac_grad_1 = tensor_jacobian_product(self._phase_filter)(phase_mask_1, full_grad_1)
-                print("jac 1 done")
-                jac_grad_2 = tensor_jacobian_product(self._phase_filter)(phase_mask_2, full_grad_2)
-                print("jac 2 done")
+                if self.num_phase_masks == 2:
+                    jac_grad_1 = tensor_jacobian_product(self._phase_filter)(phase_mask_1, full_grads[0])
+                    print("jac 1 done")
+                    jac_grad_2 = tensor_jacobian_product(self._phase_filter)(phase_mask_2, full_grads[1])
+                    print("jac 2 done")
+                elif self.num_phase_masks == 3:
+                    jac_grad_1 = tensor_jacobian_product(self._phase_filter)(phase_mask_1, full_grads[0])
+                    print("jac 1 done")
+                    jac_grad_2 = tensor_jacobian_product(self._phase_filter)(phase_mask_2, full_grads[1])
+                    print("jac 2 done")
+                    jac_grad_3 = tensor_jacobian_product(self._phase_filter)(phase_mask_3, full_grads[2])
+                    print("jac 3 done")
             else:
-                jac_grad_1 = full_grad_1
-                jac_grad_2 = full_grad_2
+                if self.num_phase_masks == 2:
+                    jac_grad_1 = full_grads[0]
+                    jac_grad_2 = full_grads[1]
+                elif self.num_phase_masks == 3:
+                    jac_grad_1 = full_grads[0]
+                    jac_grad_2 = full_grads[1]
+                    jac_grad_3 = full_grads[2]
 
             if self.space_grid.xy_symmetry:
                 jac_grad_1_symm = self._reduce_symmetrized_gradient(jac_grad_1)
                 jac_grad_2_symm = self._reduce_symmetrized_gradient(jac_grad_2)
-                jac_grad = np.concatenate((jac_grad_1_symm, jac_grad_2_symm), axis=0)
+                if self.num_phase_masks == 3:
+                    jac_grad_3_symm = self._reduce_symmetrized_gradient(jac_grad_3)
+                    jac_grad = np.concatenate((jac_grad_1_symm, jac_grad_2_symm, jac_grad_3_symm), axis=0)
+                else:
+                    jac_grad = np.concatenate((jac_grad_1_symm, jac_grad_2_symm), axis=0)
             else:
-                jac_grad = np.concatenate((jac_grad_1, jac_grad_2),axis=0)
+                if self.num_phase_masks == 2:
+                    jac_grad = np.concatenate((jac_grad_1, jac_grad_2), axis=0)
+                elif self.num_phase_masks == 3:
+                    jac_grad = np.concatenate((jac_grad_1, jac_grad_2, jac_grad_3), axis=0)
 
             grads_matrix[idx, :] = jac_grad
 
@@ -749,26 +894,53 @@ class Simulation:
     def _cost_fun(self, x, grad):
         self.iter_num[0] = self.iter_num[0] + 1
         if self.space_grid.xy_symmetry:
-            ms1_first_quadrant = x[:self.space_grid.get_dof()//2].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
-            ms2_first_quadrant = x[self.space_grid.get_dof()//2:].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
-            ms1 = self._expand_symmetrize(ms1_first_quadrant)
-            ms2 = self._expand_symmetrize(ms2_first_quadrant)
+            if self.num_phase_masks == 2:
+                ms1_first_quadrant = x[:self.space_grid.get_S_symm()].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
+                ms2_first_quadrant = x[self.space_grid.get_S_symm():].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
+                ms1 = self._expand_symmetrize(ms1_first_quadrant)
+                ms2 = self._expand_symmetrize(ms2_first_quadrant)
+            elif self.num_phase_masks == 3:
+                ms1_first_quadrant = x[:self.space_grid.get_S_symm()].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
+                ms2_first_quadrant = x[self.space_grid.get_S_symm():2*self.space_grid.get_S_symm()].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
+                ms3_first_quadrant = x[2*self.space_grid.get_S_symm():].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
+                ms1 = self._expand_symmetrize(ms1_first_quadrant)
+                ms2 = self._expand_symmetrize(ms2_first_quadrant)
+                ms3 = self._expand_symmetrize(ms3_first_quadrant)
         else:
-            ms1 = x[:self.space_grid.get_dof()//2]
-            ms2 = x[self.space_grid.get_dof()//2:]
+            if self.num_phase_masks == 2:
+                ms1 = x[:self.space_grid.get_dof()//2]
+                ms2 = x[self.space_grid.get_dof()//2:]
+            elif self.num_phase_masks == 3:
+                ms1 = x[:self.space_grid.get_dof()//3]
+                ms2 = x[self.space_grid.get_dof()//3:2*self.space_grid.get_dof()//3]
+                ms3 = x[2*self.space_grid.get_dof()//3:]
 
-        all_ms = np.concatenate((ms1, ms2))
+        if self.num_phase_masks == 2:
+            all_ms = np.concatenate((ms1, ms2))
+        elif self.num_phase_masks == 3:
+            all_ms = np.concatenate((ms1, ms2, ms3))
 
         self.w_norm[:] = all_ms
         self.phase_mask[:] = self._phase_given_w(self.w_norm)
         
         if self.use_filtering:
-            phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
-            phase_mask_2 = self.phase_mask[self.space_grid.get_S():]
-            filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
-            filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
+            if self.num_phase_masks == 2:
+                phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
+                phase_mask_2 = self.phase_mask[self.space_grid.get_S():]
+                filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
+                filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
+            elif self.num_phase_masks == 3:
+                phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
+                phase_mask_2 = self.phase_mask[self.space_grid.get_S():2*self.space_grid.get_S()]
+                phase_mask_3 = self.phase_mask[2*self.space_grid.get_S():]
+                filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
+                filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
+                filtered_phase_mask_3 = self._phase_filter(phase_mask_3)
 
-            self.filtered_phase_mask[:] = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
+            if self.num_phase_masks == 2:
+                self.filtered_phase_mask[:] = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
+            elif self.num_phase_masks == 3:
+                self.filtered_phase_mask[:] = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2, filtered_phase_mask_3))
         else:
             self.filtered_phase_mask[:] = self.phase_mask
 
@@ -779,23 +951,44 @@ class Simulation:
 
         for target in self.targets:
 
-            C, full_grad_1, full_grad_2 = self._value_and_grad(target) 
+            C, full_grads = self._value_and_grad(target) 
 
             C_all_wavelengths.append(C)
             tested_wavelengths.append(target.get_wavelength())
             if self.use_filtering:
-                jac_grad_1 = tensor_jacobian_product(self._phase_filter)(phase_mask_1, full_grad_1)
-                jac_grad_2 = tensor_jacobian_product(self._phase_filter)(phase_mask_2, full_grad_2)
+                if self.num_phase_masks == 2:
+                    full_grad_1, full_grad_2 = full_grads
+                    jac_grad_1 = tensor_jacobian_product(self._phase_filter)(phase_mask_1, full_grad_1)
+                    jac_grad_2 = tensor_jacobian_product(self._phase_filter)(phase_mask_2, full_grad_2)
+                elif self.num_phase_masks == 3:
+                    full_grad_1, full_grad_2, full_grad_3 = full_grads
+                    jac_grad_1 = tensor_jacobian_product(self._phase_filter)(phase_mask_1, full_grad_1)
+                    jac_grad_2 = tensor_jacobian_product(self._phase_filter)(phase_mask_2, full_grad_2)
+                    jac_grad_3 = tensor_jacobian_product(self._phase_filter)(phase_mask_3, full_grad_3)
             else:
-                jac_grad_1 = full_grad_1
-                jac_grad_2 = full_grad_2
+                if self.num_phase_masks == 2:
+                    full_grad_1, full_grad_2 = full_grads
+                    jac_grad_1 = full_grad_1
+                    jac_grad_2 = full_grad_2
+                elif self.num_phase_masks == 3:
+                    full_grad_1, full_grad_2, full_grad_3 = full_grads
+                    jac_grad_1 = full_grad_1
+                    jac_grad_2 = full_grad_2
+                    jac_grad_3 = full_grad_3
 
             if self.space_grid.xy_symmetry:
                 jac_grad_1_symm = self._reduce_symmetrized_gradient(jac_grad_1)
                 jac_grad_2_symm = self._reduce_symmetrized_gradient(jac_grad_2)
-                jac_grad = np.concatenate((jac_grad_1_symm, jac_grad_2_symm), axis=0)
+                if self.num_phase_masks == 2:
+                    jac_grad = np.concatenate((jac_grad_1_symm, jac_grad_2_symm), axis=0)
+                elif self.num_phase_masks == 3:
+                    jac_grad_3_symm = self._reduce_symmetrized_gradient(jac_grad_3)
+                    jac_grad = np.concatenate((jac_grad_1_symm, jac_grad_2_symm, jac_grad_3_symm), axis=0)
             else:
-                jac_grad = np.concatenate((jac_grad_1, jac_grad_2),axis=0)
+                if self.num_phase_masks == 2:
+                    jac_grad = np.concatenate((jac_grad_1, jac_grad_2),axis=0)
+                elif self.num_phase_masks == 3:
+                    jac_grad = np.concatenate((jac_grad_1, jac_grad_2, jac_grad_3),axis=0)
 
             grad_partial[:] += jac_grad
 
@@ -840,19 +1033,25 @@ class Simulation:
 
         '''
         if self.use_filtering:
-            filtered_phase_mask_1 = self._phase_filter(self.phase_mask[:self.space_grid.get_S()])
-            filtered_phase_mask_2 = self._phase_filter(self.phase_mask[self.space_grid.get_S():])
-            self.filtered_phase_mask = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
+            if self.num_phase_masks == 2:
+                filtered_phase_mask_1 = self._phase_filter(self.phase_mask[:self.space_grid.get_S()])
+                filtered_phase_mask_2 = self._phase_filter(self.phase_mask[self.space_grid.get_S():])
+                self.filtered_phase_mask = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
+            elif self.num_phase_masks == 3:
+                filtered_phase_mask_1 = self._phase_filter(self.phase_mask[:self.space_grid.get_S()])
+                filtered_phase_mask_2 = self._phase_filter(self.phase_mask[self.space_grid.get_S():2*self.space_grid.get_S()])
+                filtered_phase_mask_3 = self._phase_filter(self.phase_mask[2*self.space_grid.get_S():])
+                self.filtered_phase_mask = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2, filtered_phase_mask_3))
         else:
             self.filtered_phase_mask = self.phase_mask
 
-        mask_upper_bounds = self.norm_phase_max * np.where( self.space_grid.get_X().flatten()**2 + self.space_grid.get_Y().flatten()**2 < (self.ms_max_avail_diameter/2)**2, 1, 0)
-        mask_upper_bounds_full = np.concatenate((mask_upper_bounds, mask_upper_bounds),axis=0)
+        mask_upper_bounds = self.norm_phase_max * np.where(self.space_grid.get_X().flatten()**2 + self.space_grid.get_Y().flatten()**2 < (self.ms_max_avail_diameter/2)**2, 1, 0)
+        mask_upper_bounds_full = np.tile(mask_upper_bounds,self.num_phase_masks)
         mask_lower_bounds_full = np.zeros_like(mask_upper_bounds_full)
         
         if self.space_grid.xy_symmetry:
             mask_upper_bounds_symm = mask_upper_bounds.reshape((self.space_grid.get_Nx(),self.space_grid.get_Ny()))[:self.space_grid.get_nx()+1, :self.space_grid.get_ny()+1].flatten()
-            mask_upper_bounds_symm_full = np.concatenate((mask_upper_bounds_symm, mask_upper_bounds_symm),axis=0)
+            mask_upper_bounds_symm_full = np.tile(mask_upper_bounds_symm,self.num_phase_masks)
             mask_lower_bounds_symm_full = np.zeros_like(mask_upper_bounds_symm_full)
             self.chosen_mask_upper_bounds = mask_upper_bounds_symm_full
             self.chosen_mask_lower_bounds = mask_lower_bounds_symm_full
@@ -923,23 +1122,45 @@ class Simulation:
             make_2Dplot_of(output_field[-1], self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="phase", save_name=f"{self.results_folder}/output_fields_{i}_phase_plot")
 
         #phase masks
-        phase_mask_1 = self._phase_given_w(self.w_norm[:self.space_grid.get_S()]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
-        phase_mask_2 = self._phase_given_w(self.w_norm[self.space_grid.get_S():]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
+        if self.num_phase_masks == 2:
+            phase_mask_1 = self._phase_given_w(self.w_norm[:self.space_grid.get_S()]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
+            phase_mask_2 = self._phase_given_w(self.w_norm[self.space_grid.get_S():]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
+        elif self.num_phase_masks == 3:
+            phase_mask_1 = self._phase_given_w(self.w_norm[:self.space_grid.get_S()]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
+            phase_mask_2 = self._phase_given_w(self.w_norm[self.space_grid.get_S():2*self.space_grid.get_S()]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
+            phase_mask_3 = self._phase_given_w(self.w_norm[2*self.space_grid.get_S():]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
+        
         if self.use_filtering:
-            filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
-            filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
+            if self.num_phase_masks == 2:
+                filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
+                filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
+            elif self.num_phase_masks == 3:
+                filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
+                filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
+                filtered_phase_mask_3 = self._phase_filter(phase_mask_3)
         else:
-            filtered_phase_mask_1 = phase_mask_1
-            filtered_phase_mask_2 = phase_mask_2
+            if self.num_phase_masks == 2:
+                filtered_phase_mask_1 = phase_mask_1
+                filtered_phase_mask_2 = phase_mask_2
+            elif self.num_phase_masks == 3:
+                filtered_phase_mask_1 = phase_mask_1
+                filtered_phase_mask_2 = phase_mask_2
+                filtered_phase_mask_3 = phase_mask_3
         make_2Dplot_of(phase_mask_1, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/phase_mask_1_plot")
         make_2Dplot_of(phase_mask_2, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/phase_mask_2_plot")
         make_2Dplot_of(filtered_phase_mask_1, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/filtered_phase_mask_1_plot")
         make_2Dplot_of(filtered_phase_mask_2, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/filtered_phase_mask_2_plot")
+        if self.num_phase_masks == 3:
+            make_2Dplot_of(phase_mask_3, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/phase_mask_3_plot")
+            make_2Dplot_of(filtered_phase_mask_3, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/filtered_phase_mask_3_plot")
 
         np.save(f"{self.results_folder}/optimized_phase_mask_1.npy", phase_mask_1)
         np.save(f"{self.results_folder}/optimized_phase_mask_2.npy", phase_mask_2)
         np.save(f"{self.results_folder}/filtered_phase_mask_1.npy", filtered_phase_mask_1)
         np.save(f"{self.results_folder}/filtered_phase_mask_2.npy", filtered_phase_mask_2)
+        if self.num_phase_masks == 3:
+            np.save(f"{self.results_folder}/optimized_phase_mask_3.npy", phase_mask_3)
+            np.save(f"{self.results_folder}/filtered_phase_mask_3.npy", filtered_phase_mask_3)
 
     def get_best_opt_val(self):
         if self.is_optimized_flag:
@@ -968,6 +1189,7 @@ class Simulation:
                 raise ValueError("The provided space grid is not compatible with the target fields.")
 
         self.space_grid = new_space_grid
+        self.num_phase_masks = self.space_grid.get_num_phase_masks()
 
         self.space_grid_is_set = False
         self.is_optimized_flag = False
@@ -989,12 +1211,14 @@ class Simulation:
             self.nu_parallel = self.K_parallel / (2 * np.pi)
             
             #phase masks initialization
-            self.w_norm = np.zeros((2*self.space_grid.get_S()))
+            self.w_norm = np.zeros((self.num_phase_masks*self.space_grid.get_S()))
             self.w_norm_symm = np.zeros(self.space_grid.get_dof())
             self.phase_mask = self._phase_given_w(self.w_norm)
+            
             #initialize intermediate fields
-            self.intermediate_electric_fields = [None, None, None]
-            self.intermediate_magnetic_fields = [None, None, None]
+            self.intermediate_electric_fields = [None] * (self.num_phase_masks + 1)
+            self.intermediate_magnetic_fields = [None] * (self.num_phase_masks + 1)
+            
             #pyfftw init
             self.fft_input_array = pyfftw.empty_aligned((self.space_grid.get_Nx(), self.space_grid.get_Ny()), dtype='complex128', n=16)
             self.fft_output_array = pyfftw.empty_aligned((self.space_grid.get_Nx(), self.space_grid.get_Ny()), dtype='complex128', n=16)
@@ -1017,7 +1241,7 @@ class Simulation:
         self.opt_history = [] #updating distances resets the history
         new_space_grid = SpaceGrid(
                 side_pixels=self.space_grid.get_Nx(), 
-                unit_cell_pitch=self.space_grid.get_unit_cell_pitch() * 1e6, 
+                unit_cell_pitch=self.space_grid.get_unit_cell_pitch(),
                 prop_distances=new_distances, 
                 materials_refr_index=self.space_grid.get_materials_refr_index(),
                 xy_symmetry=True,
@@ -1025,6 +1249,67 @@ class Simulation:
         
         self.set_space_grid(new_space_grid)
 
+    def inject_phase_masks(self, input_phase_masks: list):
+        """
+        Inject the specified phase masks into the simulation.
+        Args:
+            input_phase_masks (list): A list of phase masks, flattened, to be injected into the simulation. 
+        Returns:
+            None
+        """
+        #check if the length of the list of input_phase_masks we are trying to inject
+        #has the same number of phase masks in this simulation object.
+        if len(input_phase_masks) != self.num_phase_masks:
+            raise ValueError(f"Expected {self.num_phase_masks} phase masks, but got {len(input_phase_masks)}.")
+        for i, phase_mask in enumerate(input_phase_masks):
+            self.phase_mask[i*self.space_grid.get_S():(i+1)*self.space_grid.get_S()] = phase_mask
+            self.w_norm[i*self.space_grid.get_S():(i+1)*self.space_grid.get_S()] = self._w_given_phase(phase_mask)
+        if self.use_filtering:
+            if self.num_phase_masks == 2:
+                filtered_phase_mask_1 = self._phase_filter(self.phase_mask[:self.space_grid.get_S()])
+                filtered_phase_mask_2 = self._phase_filter(self.phase_mask[self.space_grid.get_S():])
+                self.filtered_phase_mask = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
+            elif self.num_phase_masks == 3:
+                filtered_phase_mask_1 = self._phase_filter(self.phase_mask[:self.space_grid.get_S()])
+                filtered_phase_mask_2 = self._phase_filter(self.phase_mask[self.space_grid.get_S():2*self.space_grid.get_S()])
+                filtered_phase_mask_3 = self._phase_filter(self.phase_mask[2*self.space_grid.get_S():])
+                self.filtered_phase_mask = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2, filtered_phase_mask_3))
+        else:
+            self.filtered_phase_mask = self.phase_mask
+
+
+    def source_sweep(self, distances: np.ndarray = None, input_phase_masks: list = None):
+        """
+        This method runs the propagation algorithm for the specified sources and targets in the simulation object.
+        For every propagation step, it enforces the same phase masks. It can optionally update propagation distances and phase masks. 
+        If not specified, it is assumed the simulation object has already been optimized and that the required quantities are already set.
+        It is useful for studying the wavelength-dependent performance of the system.
+        Args:
+            distances (np.ndarray, optional): Array containing the propagation distances. If None, the current distances are used.
+            input_phase_masks (list, optional): A list of phase masks to be injected into the simulation. If None, the current phase masks are used.
+        Returns:
+            dict: A dictionary mapping source wavelengths to the overlap between the output field and the associated target field.
+        """
+        results_dict = {}
+
+        if distances is not None:
+            self.update_propagation_distances(distances)
+
+        if input_phase_masks is not None:
+            self.inject_phase_masks(input_phase_masks)
+        
+        for target in self.targets:
+            source = target.get_associated_source()
+            self._update_wavelength(source.get_wavelength())
+            output_field = self._forward_propagate(source, returns_field = True)
+            #compute the overlap between the output field and associated target field
+            target_field = target.get_field(self.get_space_grid(), flatten = True)
+
+            overlap = np.abs(np.sum(np.conj(target_field) * output_field))**2
+            results_dict[source.get_wavelength()] = overlap
+
+        return results_dict
+            
     def run(self):
         """
         Run the optimization process for the simulation.
@@ -1033,6 +1318,7 @@ class Simulation:
         """
         if self.space_grid_is_set:
             if self.is_optimization_set:
+                print(f"Using {self.num_phase_masks} phase masks")
                 print("Initializing solver...")
                 self._solver_init()
                 print("Starting optimization...")
@@ -1050,16 +1336,31 @@ class Simulation:
 
                     self.is_optimized_flag = True
                     self.best_opt_val = self.solver.last_optimum_value()
-                    self.w_norm[:self.space_grid.get_S()] = self._expand_symmetrize(self.w_norm_symm[:self.space_grid.get_dof()//2])
-                    self.w_norm[self.space_grid.get_S():] = self._expand_symmetrize(self.w_norm_symm[self.space_grid.get_dof()//2:])
-                    self.phase_mask[:] = self._phase_given_w(self.w_norm)
+                    if self.num_phase_masks == 2:
+                        self.w_norm[:self.space_grid.get_S()] = self._expand_symmetrize(self.w_norm_symm[:self.space_grid.get_S_symm()])
+                        self.w_norm[self.space_grid.get_S():] = self._expand_symmetrize(self.w_norm_symm[self.space_grid.get_S_symm():])
+                        self.phase_mask[:] = self._phase_given_w(self.w_norm)
+                    elif self.num_phase_masks == 3:
+                        self.w_norm[:self.space_grid.get_S()] = self._expand_symmetrize(self.w_norm_symm[:self.space_grid.get_S_symm()])
+                        self.w_norm[self.space_grid.get_S():2*self.space_grid.get_S()] = self._expand_symmetrize(self.w_norm_symm[self.space_grid.get_S_symm():2*self.space_grid.get_S_symm()])
+                        self.w_norm[2*self.space_grid.get_S():] = self._expand_symmetrize(self.w_norm_symm[2*self.space_grid.get_S_symm():])
+                        self.phase_mask[:] = self._phase_given_w(self.w_norm)
 
                     if self.use_filtering:
-                        phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
-                        phase_mask_2 = self.phase_mask[self.space_grid.get_S():]
-                        filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
-                        filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
-                        self.filtered_phase_mask[:] = np.concatenate([filtered_phase_mask_1, filtered_phase_mask_2])
+                        if self.num_phase_masks == 2:
+                            phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
+                            phase_mask_2 = self.phase_mask[self.space_grid.get_S():]
+                            filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
+                            filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
+                            self.filtered_phase_mask[:] = np.concatenate([filtered_phase_mask_1, filtered_phase_mask_2])
+                        elif self.num_phase_masks == 3:
+                            phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
+                            phase_mask_2 = self.phase_mask[self.space_grid.get_S():2*self.space_grid.get_S()]
+                            phase_mask_3 = self.phase_mask[2*self.space_grid.get_S():]
+                            filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
+                            filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
+                            filtered_phase_mask_3 = self._phase_filter(phase_mask_3)
+                            self.filtered_phase_mask[:] = np.concatenate([filtered_phase_mask_1, filtered_phase_mask_2, filtered_phase_mask_3])
                     else:
                         self.filtered_phase_mask[:] = self.phase_mask
                     
@@ -1077,11 +1378,20 @@ class Simulation:
                     self.phase_mask[:] = self._phase_given_w(self.w_norm)
                     
                     if self.use_filtering:
-                        phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
-                        phase_mask_2 = self.phase_mask[self.space_grid.get_S():]
-                        filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
-                        filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
-                        self.filtered_phase_mask[:] = np.concatenate([filtered_phase_mask_1, filtered_phase_mask_2])
+                        if self.num_phase_masks == 2:
+                            phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
+                            phase_mask_2 = self.phase_mask[self.space_grid.get_S():]
+                            filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
+                            filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
+                            self.filtered_phase_mask[:] = np.concatenate([filtered_phase_mask_1, filtered_phase_mask_2])
+                        elif self.num_phase_masks == 3:
+                            phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
+                            phase_mask_2 = self.phase_mask[self.space_grid.get_S():2*self.space_grid.get_S()]
+                            phase_mask_3 = self.phase_mask[2*self.space_grid.get_S():]
+                            filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
+                            filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
+                            filtered_phase_mask_3 = self._phase_filter(phase_mask_3)
+                            self.filtered_phase_mask[:] = np.concatenate([filtered_phase_mask_1, filtered_phase_mask_2, filtered_phase_mask_3])
                     else:
                         self.filtered_phase_mask[:] = self.phase_mask
                     

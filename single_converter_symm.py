@@ -7,16 +7,19 @@ if not os.path.exists("results"):
 N = 1025
 unit_cell_pitch = 0.700
 
-n0 = 1.45
+n0 = 1.444
 n1 = 1.0
-n2 = 1.45
+n2 = 1.444
 mat_refr_index = np.array([n0, n1, n2])
 
 
 #d0 = 400 #propagation distance: source - MS1 [um] NO FILT
 #d1 = 280 #propagation distance: MS1 - MS2 [um] NO FILT
-d0 = 535 #propagation distance: source - MS1 [um] FILTERED
-d1 = 460 #propagation distance: MS1 - MS2 [um] FILTERED
+#d0 = 516 #propagation distance: source - MS1 [um] FILTERED mf (using LP01 of FMF)
+#d1 = 467 #propagation distance: MS1 - MS2 [um] FILTERED mf (using LP01 of FMF)
+d0 = 195 #propagation distance: source - MS1 [um] FILTERED mf (using LP01 of SMF)
+d1 = 129 #propagation distance: MS1 - MS2 [um] FILTERED mf (using LP01 of SMF)
+
 d2 = d0 #propagation distance: MS2 - target [um]
 d = np.array([d0, d1, d2])
 
@@ -33,14 +36,10 @@ space_grid = pid.SpaceGrid(
 )
 
 #define the source
-beam_waist = 5.2
-gaussian_field = np.exp(-(space_grid.get_rho())**2 / (beam_waist)**2) #Gaussian input field, flattened
-gaussian_field_normalized = (gaussian_field / np.sqrt(np.sum(np.abs(gaussian_field)**2))) #normalize the input field to have power = 1
-
 wavelengths_to_test_um = [1.530,1.550,1.570] #[um]
-source_files = ["fiber_modes/LP01_field_distribution_lda_1530_N_1025.npy",
-                "fiber_modes/LP01_field_distribution_lda_1550_N_1025.npy",
-                "fiber_modes/LP01_field_distribution_lda_1570_N_1025.npy"]
+source_files = ["fiber_modes/SMF/SMF_LP01_field_distribution_lda_1530_N_1025.npy",
+                "fiber_modes/SMF/SMF_LP01_field_distribution_lda_1550_N_1025.npy",
+                "fiber_modes/SMF/SMF_LP01_field_distribution_lda_1570_N_1025.npy"]
 sources = [pid.Source(input_field=np.load(file), 
                       wavelength=wvl, 
                       field_norm=True) for file, wvl in zip(source_files, wavelengths_to_test_um)]
@@ -48,9 +47,9 @@ sources = [pid.Source(input_field=np.load(file),
 #sources[0].plot2D(plot_zoom_x=38,plot_zoom_y=38,choose_quantity='amplitude', save_name='results/input_field')
 #define targets
 #import field data from files and create target objects
-target_files = ["fiber_modes/LP21_field_distribution_lda_1530_N_1025.npy",
-                "fiber_modes/LP21_field_distribution_lda_1550_N_1025.npy",
-                "fiber_modes/LP21_field_distribution_lda_1570_N_1025.npy"]
+target_files = ["fiber_modes/FMF/FMF_LP21_field_distribution_lda_1530_N_1025.npy",
+                "fiber_modes/FMF/FMF_LP21_field_distribution_lda_1550_N_1025.npy",
+                "fiber_modes/FMF/FMF_LP21_field_distribution_lda_1570_N_1025.npy"]
 
 target_fields = [np.load(file) for file in target_files]
 
@@ -76,7 +75,7 @@ simulation.set_optimization(
     ms_max_avail_diameter=ms_max_available_diameter,
     phase_mask_init_size=output_fiber_core_diameter/3,
     opt_max_eval=opt_max_eval,
-    conic_filter_radius=1.0,    
+    #conic_filter_radius=1.0,    
 )
 
 simulation.run()

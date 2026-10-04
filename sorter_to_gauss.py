@@ -1,26 +1,28 @@
 import mpid as pid
 import numpy as np
 import os
-if not os.path.exists("results"):
-    os.makedirs("results")
+if not os.path.exists("results_sorter"):
+    os.makedirs("results_sorter")
 
 #Space grid definition
 N = 1025
 unit_cell_pitch = 0.700 #i.e., 700 [nm]
 
 n0 = 1.45
-n1 = 1.0
+n1 = 1.45
 n2 = 1.45
-mat_refr_index = np.array([n0, n1, n2])
+n3 = 1.45
+mat_refr_index = np.array([n0, n1, n2, n3])
 
-d0 = 476 #propagation distance: source - MS1 [um]
-d1 = 510 #propagation distance: MS1 - MS2 [um]
-d2 = d0 #propagation distance: MS2 - target [um]
-d = np.array([d0, d1, d2])
+d0 = 500 #propagation distance: source - MS1 [um]
+d1 = d0 #propagation distance: MS1 - MS2 [um]
+d2 = d0 #propagation distance: MS2 - MS3 [um]
+d3 = d0 #propagation distance: MS3 - target [um]
+d = np.array([d0, d1, d2, d3])
 
-ms_max_available_diameter = 122 #[um]
+ms_max_available_diameter = 250 #[um]
 output_fiber_core_diameter = 19 #[um]
-opt_max_eval = 140
+opt_max_eval = 200
 
 space_grid = pid.SpaceGrid(
     side_pixels=N, 
@@ -32,38 +34,44 @@ space_grid = pid.SpaceGrid(
 wavelength = 1.55
 
 #define the sources
-source1 = pid.Source(input_field='fiber_modes/LP11_field_distribution_lda_1550_N_1025.npy', 
+source1 = pid.Source(input_field='fiber_modes/FMF/FMF_LP01_field_distribution_lda_1550_N_1025.npy', 
                      wavelength=wavelength, 
                      #space_grid=space_grid, 
                      field_norm=True)
-source2 = pid.Source(input_field='fiber_modes/LP21_field_distribution_lda_1550_N_1025.npy', 
+source2 = pid.Source(input_field='fiber_modes/FMF/FMF_LP11_field_distribution_lda_1550_N_1025.npy', 
+                     wavelength=wavelength, 
+                     #space_grid=space_grid, 
+                     field_norm=True)
+source3 = pid.Source(input_field='fiber_modes/FMF/FMF_LP21_field_distribution_lda_1550_N_1025.npy', 
                      wavelength=wavelength, 
                      #space_grid=space_grid, 
                      field_norm=True)
 
 
-target = pid.Target(input_field='fiber_modes/LP01_field_distribution_lda_1550_N_1025.npy', 
+target1 = pid.Target(input_field='fiber_modes/SMF/SMF_LP01_field_distribution_lda_1550_N_1025.npy', 
                     center=np.array([20,0]),
                     associated_source=source1, 
                     wavelength=wavelength, 
                     #space_grid=space_grid, 
                     field_norm=True)
-target2 = pid.Target(input_field='fiber_modes/LP01_field_distribution_lda_1550_N_1025.npy', 
-                     center=np.array([-20,0]),
+target2 = pid.Target(input_field='fiber_modes/SMF/SMF_LP01_field_distribution_lda_1550_N_1025.npy', 
+                     center=np.array([0,0]),
                      associated_source=source2, 
                      wavelength=wavelength, 
                      #space_grid=space_grid, 
-                     field_norm=True) 
+                     field_norm=True)
 
-#make a plot of sources and targets
-#target.plot2D(plot_zoom_x=100, plot_zoom_y=100, choose_quantity="amplitude", save_name="results/target_plot")
-#target2.plot2D(plot_zoom_x=100, plot_zoom_y=100, choose_quantity="amplitude", save_name="results/target2_plot")
-#source1.plot2D(plot_zoom_x=100, plot_zoom_y=100, choose_quantity="amplitude", save_name="results/source1_plot")
-#source2.plot2D(plot_zoom_x=100, plot_zoom_y=100, choose_quantity="amplitude", save_name="results/source2_plot")
+target3 = pid.Target(input_field='fiber_modes/SMF/SMF_LP01_field_distribution_lda_1550_N_1025.npy', 
+                     center=np.array([-20,0]),
+                     associated_source=source3, 
+                     wavelength=wavelength, 
+                     #space_grid=space_grid, 
+                     field_norm=True)
+
 
 sim = pid.Simulation(
-    sources=[source1, source2],
-    targets=[target, target2],
+    sources=[source1, source2, source3],
+    targets=[target1, target2, target3],
     central_wavelength=wavelength,
     space_grid=space_grid,
     n_cpu=1
@@ -78,7 +86,7 @@ sim.set_optimization(opt_param_min=opt_param_min,
                      phase_mask_init_size=output_fiber_core_diameter,
                      opt_max_eval=opt_max_eval,
                      strategy = 'mean',
-                     #conic_filter_radius = 1.0, #i.e. 700 [nm]
+                     #conic_filter_radius = 1.0,
                     )
 
 sim.run()
