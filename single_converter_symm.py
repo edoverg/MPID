@@ -75,7 +75,7 @@ simulation.set_optimization(
     ms_max_avail_diameter=ms_max_available_diameter,
     phase_mask_init_size=output_fiber_core_diameter/3,
     opt_max_eval=opt_max_eval,
-    #conic_filter_radius=1.0,    
+    conic_filter_radius=1.0,    
 )
 
 simulation.run()

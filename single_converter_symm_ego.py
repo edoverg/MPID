@@ -88,7 +88,7 @@ def setup_optical_system()->pid.Simulation:
         ms_max_avail_diameter=ms_max_available_diameter,
         phase_mask_init_size=output_fiber_core_diameter/3,
         opt_max_eval=opt_max_eval,
-        conic_filter_radius=1.0,
+        conic_filter_radius=1.5,
         results_while_solving = False,
         save_results = False,
     )
@@ -299,7 +299,7 @@ def run_ego(initial_dataset, surrogate_model, n_ego_iter, xlimits, simulation):
         y_pred_grid = np.zeros_like(d0_grid)
         for i in range(d0_grid.shape[0]):
             for j in range(d0_grid.shape[1]):
-                y_pred_grid[i,j] = sm.predict_values(np.atleast_2d([d0_grid[i,j], d1_grid[i,j]]))
+                y_pred_grid[i,j] = sm.predict_values(np.atleast_2d([d0_grid[i,j], d1_grid[i,j]]))[0,0]
         contour = ax.contourf(d0_grid, d1_grid, y_pred_grid, levels=50, cmap='viridis')
         fig.colorbar(contour, ax=ax, label='predicted overlap')
         ax.scatter(xdoe_train_loaded[:,0], xdoe_train_loaded[:,1], color='blue', label='DOE Points')
@@ -328,21 +328,6 @@ def run_ego(initial_dataset, surrogate_model, n_ego_iter, xlimits, simulation):
     y_opt = y_data[ind_best]
     np.savetxt(f'{surrogate_folder_name}/ego_opt_results.txt', np.hstack((x_opt,y_opt)))
     
-    ims = []
-    fig = plt.figure(figsize=[10, 10])
-    ax = plt.gca()
-    ax.axes.get_xaxis().set_visible(False)
-    ax.axes.get_yaxis().set_visible(False)
-
-    for k in range(n_ego_iter):
-        image_pt = mpimg.imread(f"{surrogate_folder_name}/optimisation_{k}.pdf")
-        im = plt.imshow(image_pt)
-        ims.append([im])
-
-    ani = animation.ArtistAnimation(fig, ims, interval=500)
-    #save the animation to a gif file
-    ani.save(f'{surrogate_folder_name}/ego_optimization.gif', writer='pillow')
-
     #plot of the EI history
     fig, ax = plt.subplots(figsize=(8,6))
     ax.plot(range(1, n_ego_iter+1), EI_history, marker='o')
@@ -459,8 +444,8 @@ if __name__ == "__main__":
     n_ego_iter = 15 #number of EGO refinement iterations
     
     corr_function_name = 'matern32'
-    doe_folder_name = 'DOE'
-    surrogate_folder_name = corr_function_name + '_surrogate_filtered'
+    doe_folder_name = 'DOE_1_5'
+    surrogate_folder_name = corr_function_name + '_surrogate_filtered_1_5'
     if not os.path.exists(doe_folder_name):
         os.makedirs(doe_folder_name)
     if not os.path.exists(surrogate_folder_name):

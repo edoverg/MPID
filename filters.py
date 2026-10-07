@@ -2,7 +2,6 @@ import autograd.numpy as npa
 from numpy.typing import ArrayLike as ArrayLikeType
 import matplotlib.pyplot as plt
 
-filter_radius_um = 1
 def _centered(arr: npa.ndarray, newshape: ArrayLikeType) -> npa.ndarray:
     """Formats the output of an FFT to center the zero-frequency component.
 

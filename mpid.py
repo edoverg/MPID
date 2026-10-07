@@ -137,13 +137,13 @@ class SpaceGrid:
         '''
         Returns the resolution of the spatial grid in micrometers [um].
         '''
-        return self.unit_cell_pitch * 1e6 # convert to [um]
+        return self.unit_cell_pitch * 1e6 # returns [um]
 
     def get_unit_cell_pitch(self) -> float:
         '''
         Returns the unit cell pitch of the spatial grid in micrometers [um].
         '''
-        return self.unit_cell_pitch * 1e6 # convert back to [um]
+        return self.unit_cell_pitch * 1e6 # returns [um]
 
     def get_size_x(self):
         return self.size_x
@@ -396,7 +396,7 @@ class Simulation:
             self.filter_radius = None
 
         if conic_filter_radius is not None:
-            self.filter_radius = conic_filter_radius * 1e-6
+            self.filter_radius = conic_filter_radius 
         else:
             self.filter_radius = None
 
