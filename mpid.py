@@ -185,9 +185,169 @@ class SpaceGrid:
 
     def get_rho(self):
         return self.rho
+
+class UnitCell:
+    def __init__(self,wavelength,tune_param:np.ndarray,sim_phase:np.ndarray):
+        '''
+        Constructs a unit cell object with a given tuning parameter and associated simulated transmission phase, at the specified wavelength.
+        Once initialized, the gradient of the phase with respect to the tuning parameter is computed.
+
+        Parameters:
+            wavelength (float): The wavelength associated with the simulation in micrometers [um].
+            tune_param (ndarray): The tuning parameter for the unit cell.
+            sim_phase (ndarray): The associated simulated phase value.
+        '''
+        self.wavelength = wavelength * 1e-6
+        self.tune_param = tune_param
+        self.sim_phase_raw = np.unwrap(sim_phase - sim_phase[0])
+        moving_average_size = 3
+        #before filtering, extend the signal by a number of elements equal to the moving average size to reduce edge effects
+        #and set those elements equal to the last value of the original signal
+        self.sim_phase_raw_extended = np.concatenate([self.sim_phase_raw, np.full(moving_average_size, self.sim_phase_raw[-1])])
+        self.sim_phase_filtered = np.convolve(self.sim_phase_raw_extended, np.ones(moving_average_size)/moving_average_size, mode='same')
+        #the final value needs to remove the extra elements added for the moving average
+        self.sim_phase_filtered = self.sim_phase_filtered[:-moving_average_size]
+        self._compute_gradient()
+
+    def get_wavelength(self):
+        '''
+        Returns the wavelength, in meters, associated to this unit-cell
+        
+        Returns:
+            float: The wavelength in meters associated with this unit-cell.
+        '''
+        return self.wavelength
+
+    def _compute_gradient(self)->None:
+        '''
+        Computes the raw gradient of the simulated phase with respect to the tuning parameter.
+        The numpy gradient method is used for the calculation. 
+        It uses central differences in the interior and first differences at the boundaries.
+        '''
+        self.raw_gradient = np.gradient(self.sim_phase_filtered, self.tune_param)
+
+    def compute_gradient_at(self, tune_param_value, is_normalized = False):
+        '''
+        Computes the gradient of the simulated phase at a specific tuning parameter value.
+
+        Parameters:
+            tune_param_value (float): The tuning parameter value at which to compute the gradient.
+
+        Returns:
+            float: The gradient of the simulated phase at the specified tuning parameter value.
+        '''
+        if is_normalized:
+            tune_param_value = self.get_param_from_norm(tune_param_value)
+        return np.interp(tune_param_value, self.tune_param, self.raw_gradient)
+
+    def get_phase_at_param(self, tune_param_value):
+        '''
+        Retrieves the simulated phase at a specific tuning parameter value.
+
+        Parameters:
+            tune_param_value (np.ndarray or float): The tuning parameter value at which to retrieve the simulated phase.
+
+        Returns:
+            np.ndarray or float: The simulated phase at the specified tuning parameter value.
+        '''
+        return np.interp(tune_param_value, self.tune_param, self.sim_phase_filtered)
+
+    def get_param_from_norm(self, normalized_value):
+        '''
+        Converts a normalized parameter value to the corresponding actual tuning parameter value.
+
+        Parameters:
+            normalized_value (np.ndarray or float): The normalized parameter value (between 0 and 1).
+
+        Returns:
+            np.ndarray or float: The corresponding actual tuning parameter value.
+        '''
+        return self.get_minimum_param() + normalized_value * (self.get_maximum_param() - self.get_minimum_param())
+
+    def dw_dw_norm(self):
+        '''
+        Computes the derivative of the actual tuning parameter with respect to the normalized parameter.
+        This is useful for converting gradients from normalized space to physical space.
+
+        Returns:
+            float: The derivative of the tuning parameter with respect to the normalized one.
+        '''
+        return (self.get_maximum_param() - self.get_minimum_param())
+        
+    def get_gradient(self):
+        '''
+        Returns the raw gradient of the simulated phase with respect to the tuning parameter.
+
+        Returns:
+            np.ndarray: The raw gradient of the simulated phase.
+        '''
+        return self.raw_gradient
+
+    def get_complete_gradient(self):
+        '''
+        Returns the complete gradient of the simulated phase with respect to the normalized tuning parameter.
+
+        Returns:
+            np.ndarray: The complete gradient of the simulated phase.
+        '''
+        return self.get_gradient() * self.dw_dw_norm()
+
+    def get_complete_gradient_from_norm_param(self, norm_params):
+        '''
+        Computes the complete gradient of the simulated phase with respect to the normalized tuning parameter at the specified normalized parameter values.
+
+        Parameters:
+            norm_params (np.ndarray or float): The normalized parameter values (between 0 and 1).
+
+        Returns:
+            np.ndarray or float: The complete gradient of the simulated phase at the specified normalized parameter values.
+        '''
+        return self.compute_gradient_at(norm_params, is_normalized=True) * self.dw_dw_norm()
+
+    def get_phase_from_norm_param(self, norm_param):
+        '''
+        Computes the phase value given a normalized tuning parameter.
+
+        Parameters:
+            norm_param (np.ndarray or float): The normalized parameter value (between 0 and 1).
+
+        Returns:
+            np.ndarray or float: The corresponding phase value.
+        '''
+        return self.get_phase_at_param(self.get_param_from_norm(norm_param))
+
+    def get_tune_param(self):
+        return self.tune_param
+
+    def get_raw_sim_phase(self):
+        return self.sim_phase_raw
     
+    def get_filtered_sim_phase(self):
+        return self.sim_phase_filtered
+
+    def get_sim_phase(self):
+        return self.sim_phase_filtered
+
+    def get_wavelength(self):
+        return self.wavelength
+
+    def get_minimum_param(self):
+        return np.min(self.tune_param)
+
+    def get_maximum_param(self):
+        return np.max(self.tune_param)
+    
+
 class Field:
     def __init__(self, input_field: np.ndarray, wavelength: float, center: np.ndarray = np.array([0,0])):
+        '''
+        Initializes a Field object.
+
+        Parameters:
+            input_field (np.ndarray): The input field array.
+            wavelength (float): The wavelength of the field in micrometers.
+            center (np.ndarray, optional): The center coordinates of the field. Defaults to np.array([0,0]).
+        '''
         self.center = center * 1e-6
         self.input_field = input_field
         self.wavelength = wavelength * 1e-6
@@ -340,13 +500,14 @@ class Simulation:
         self.mu_0 = 4*np.pi*1e-7
         self.central_wavelength = central_wavelength * 1e-6 #central_wavelength parameter has little sense to exist. Revise
         self.operating_wavelength = self.central_wavelength #initially, the operating_wavelength is the central wavelength
+        self.current_unit_cell = None
+        self.use_unit_cells = False #must be set before set_space_grid, which calls _phase_given_w
         self.n_cpu = n_cpu
 
         if space_grid is not None:
             self.set_space_grid(space_grid)
 
         self._configure_fftw(self.n_cpu)
-        
         self.is_optimization_set = False
         self.is_optimized_flag = False
         self.results_while_solving = True
@@ -361,21 +522,38 @@ class Simulation:
         pyfftw.config.PLANNER_EFFORT = planner_effort
 
     def set_optimization(self, 
-                         opt_param_min, 
-                         opt_param_max, 
-                         ms_max_avail_diameter, 
-                         phase_mask_init_size, 
-                         opt_max_eval, 
-                         conic_filter_radius = None, 
-                         results_while_solving=True, 
-                         custom_mask = None, 
-                         strategy = 'mean',
-                         save_results = True):
+                         opt_param_min: float, 
+                         opt_param_max: float, 
+                         ms_max_avail_diameter: float, 
+                         phase_mask_init_size: float, 
+                         opt_max_eval: int, 
+                         conic_filter_radius: float = None,
+                         unit_cells: list[UnitCell] = None, 
+                         results_while_solving: bool=True, 
+                         custom_mask: np.ndarray = None, 
+                         strategy: str = 'mean',
+                         save_results: bool = True):
         '''
         Sets the optimization parameters for the simulation.
+
         Arguments related to physical dimensions are expected to be in micrometers [um].
+
         Args:
-            optimization_params (dict): A dictionary containing optimization parameters.
+            opt_param_min (float): Minimum value of the optimization parameter.
+            opt_param_max (float): Maximum value of the optimization parameter.
+            ms_max_avail_diameter (float): Maximum available diameter of the metasurface.
+            phase_mask_init_size (float): Initial size of the phase mask.
+            opt_max_eval (int): Maximum number of optimization evaluations.
+            conic_filter_radius (float, optional): Radius of the conic filter. Defaults to None.
+            unit_cells (list[UnitCell], optional): List of unit cells to be used. If the list
+                is empty, the optimization is performed on phase values. If a list of unit-cell objects is provided,
+                the optimization is carried over the provided unit cells, assuming they only have one degree of freedom each.
+            results_while_solving (bool, optional): Whether to store results while solving. Defaults to True.
+            custom_mask (array-like, optional): Custom mask for the optimization. Defaults to None.
+            strategy (str, optional): Optimization strategy. In a multiobjective optimization, this option defines
+                how the multiple objectives are combined: 'mean' computes the mean of all objectives;
+                'epigraph' takes the epigraph reformulation of the problem.
+            save_results (bool, optional): Whether to save the optimization results. Defaults to True.
         '''
         self.is_optimization_set = True
         self.iter_num = [0]
@@ -388,6 +566,27 @@ class Simulation:
         self.custom_mask = custom_mask #future: one might be able to directly pass a custom mask
         self.strategy = strategy
         self.save_results = save_results
+        self.unit_cells = unit_cells
+
+        if unit_cells is None or len(unit_cells) == 0:
+            self.use_unit_cells = False
+        else:
+            #if unit_cells are provided, we need to check that there is one unit cell for each wavelength in 
+            #the simulation. Moreover, we need to check if minimum and maximum parameters are equal across all the unit cells
+            #first: check if the number of unit cells matches the number of wavelengths in the simulation
+            if len(unit_cells) != len(self.get_wvl_all_targets()):
+                raise ValueError("The number of unit cells must match the number of wavelengths in the simulation.")
+            #second: check if the minimum and maximum parameters are equal across all unit cells
+            min_param = self.unit_cells[0].get_minimum_param()
+            max_param = self.unit_cells[0].get_maximum_param()
+            for uc in self.unit_cells:
+                if not (np.abs(uc.get_minimum_param() - min_param) < 1e-12) or not (np.abs(uc.get_maximum_param() - max_param) < 1e-12):
+                    raise ValueError("All unit cells must have the same minimum and maximum parameters.")
+            #third: check if, for each wavelength in the simulation, there exists a unit cell with the same wavelength
+            for wvl in self.get_wvl_all_targets():
+                if not any(np.abs(uc.get_wavelength() - wvl) < 1e-12 for uc in self.unit_cells):
+                    raise ValueError(f"No unit cell found for wavelength {wvl}.")
+            self.use_unit_cells = True
 
         if conic_filter_radius is None:
             self.use_filtering = False
@@ -427,6 +626,9 @@ class Simulation:
     def get_wvl_all_targets(self, unit_measure = 1):
         return [target.get_wavelength() * unit_measure for target in self.targets]
 
+    def get_unit_cells(self):
+        return self.unit_cells
+
     def _update_wavelength(self, new_wavelength):
         '''
         Updates the operating wavelength and related vectors (lda_vector and k_vectors) based on the new wavelength.
@@ -437,6 +639,16 @@ class Simulation:
         assert new_wavelength > 0, "Wavelength must be positive."
         self.operating_wavelength = new_wavelength
 
+        #if using unit_cells, update the current unit cell based on the new wavelength
+        if self.use_unit_cells:
+            self.current_unit_cell = None
+            for uc in self.unit_cells:
+                if np.abs(uc.get_wavelength() - self.operating_wavelength) < 1e-12:
+                    self.current_unit_cell = uc
+                    break
+            if self.current_unit_cell is None:
+                raise ValueError("No matching unit cell found for the current operating wavelength.")
+        
         self.lda_vector = [self.operating_wavelength / n for n in self.space_grid.get_materials_refr_index()]
         self.eps_r = (self.space_grid.get_materials_refr_index())**2
         self.k_vectors = [2 * np.pi / lda for lda in self.lda_vector]
@@ -447,11 +659,29 @@ class Simulation:
         self.P_nat = [np.fft.ifftshift(self.P[i]) for i in range(len(self.P))]
         self.P_dagger_nat = [self.P_nat[i].T.conj() for i in range(len(self.P_nat))]
 
-    def _phase_given_w(self):
-        return 2 * np.pi * self.w_norm
-
-    def _phase_given_w(self, input_normalized_phase):
-        return 2 * np.pi * input_normalized_phase
+    def _phase_given_w(self, input_normalized_param):
+        '''
+        Computes the phase corresponding to the given input normalized parameter.
+        If unit cells are used, it retrieves the phase values from the unit cell data.
+        If unit cells are not used, then the normalized parameters are turned into phase values by simply
+        multiplying them by 2 * pi.
+        The unit cell object that is used is selected from the available ones according to the current operating wavelength.
+        For multi-wavelength optimization, if use_unit_cells is enabled, then there must be a matching unit cell for each operating wavelength.
+        '''
+        if self.use_unit_cells:
+            matching_unit_cell = None
+            for uc in self.unit_cells:
+                if np.abs(uc.wavelength - self.operating_wavelength) < 1e-12:
+                    matching_unit_cell = uc
+                    break
+            if matching_unit_cell is None:
+                raise ValueError("No matching unit cell found for the current operating wavelength.")
+            #once the matching unit cell is found, extract the phase information based on the input normalized phase
+            true_diameter = matching_unit_cell.get_param_from_norm(input_normalized_param)
+            phase = matching_unit_cell.get_phase_at_param(true_diameter)
+            return phase
+        else:
+            return 2 * np.pi * input_normalized_param
 
     def _w_given_phase(self, input_phase):
         return input_phase / (2 * np.pi)
@@ -487,7 +717,6 @@ class Simulation:
         If multiple source/targets are present in this simulation instance, the mask
         is locally initialized around each source and target.
         '''
-    
         source_Efields = [source.get_field(space_grid=self.space_grid, flatten=True) for source in self.sources]
         source_centers = [source.get_center() for source in self.sources]
 
@@ -507,35 +736,45 @@ class Simulation:
         for _, source_phase in enumerate(source_pattern_phase):
             cumulated_source_phase += source_phase / (2 * np.pi) #normalize the source phase to be between 0 and 1
 
-        self.w_norm[:self.space_grid.get_S()] = ((cumulated_source_phase + 2*np.pi) % (2*np.pi)) / (2*np.pi)
+        #notice that w_norm might either be normalized phase values or normalized diameters. We shall
+        #look to see if this difference leads to issues during the optimization.
+        self.w_norm[:self.space_grid.get_S()] = ((cumulated_source_phase + 2 * np.pi) % (2 * np.pi)) / (2 * np.pi)
 
         #initialize mask on target side
         cumulated_target_phase = np.zeros(self.space_grid.get_S())
         for _, target_phase in enumerate(target_pattern_phase):
             cumulated_target_phase += target_phase / (2 * np.pi) #normalize the target phase to be between 0 and 1
 
-        if self.num_phase_masks ==2:
-            self.w_norm[self.space_grid.get_S():] = ((cumulated_target_phase + 2*np.pi) % (2*np.pi)) / (2*np.pi)
+        #this initialization was intended when only dealing with phase values.
+        #in practice, when use_unit_cell is enabled, the value of w_norm represents normalized diameters,
+        #not phase values. Let's see how this affects the initialization. 12/10/2026
+        if self.num_phase_masks == 2:
+            self.w_norm[self.space_grid.get_S():] = ((cumulated_target_phase + 2 * np.pi) % (2 * np.pi)) / (2 * np.pi)
         elif self.num_phase_masks == 3:
-            self.w_norm[2*self.space_grid.get_S():] = ((cumulated_target_phase + 2*np.pi) % (2*np.pi)) / (2*np.pi)
+            self.w_norm[2 * self.space_grid.get_S():] = ((cumulated_target_phase + 2 * np.pi) % (2 * np.pi)) / (2 * np.pi)
 
-        
         if self.space_grid.xy_symmetry:
             if self.num_phase_masks == 2:
                 w_norm_symm_1 = self._symmetrize(self.w_norm[:self.space_grid.get_S()])
                 w_norm_symm_2 = self._symmetrize(self.w_norm[self.space_grid.get_S():])
             elif self.num_phase_masks == 3:
                 w_norm_symm_1 = self._symmetrize(self.w_norm[:self.space_grid.get_S()])
-                w_norm_symm_2 = self._symmetrize(self.w_norm[self.space_grid.get_S():2*self.space_grid.get_S()])
-                w_norm_symm_3 = self._symmetrize(self.w_norm[2*self.space_grid.get_S():])
-
+                w_norm_symm_2 = self._symmetrize(self.w_norm[self.space_grid.get_S(): 2 * self.space_grid.get_S()])
+                w_norm_symm_3 = self._symmetrize(self.w_norm[2 * self.space_grid.get_S():])
             if self.num_phase_masks == 2:
                 self.w_norm_symm[:] = np.concatenate((w_norm_symm_1, w_norm_symm_2), axis=0)
             elif self.num_phase_masks == 3:
                 self.w_norm_symm[:] = np.concatenate((w_norm_symm_1, w_norm_symm_2, w_norm_symm_3), axis=0)
 
         self.phase_mask[:] = self._phase_given_w(self.w_norm)
-                
+
+    def _normParam_filter(self, norm_param: np.ndarray) -> np.ndarray:
+        '''Applies a conic filter on normalized parameters. Normalized parameters are the ones the optimization algorithm
+        uses and are always in the range [0,1].'''
+        return conic_filter(norm_param,
+                            self.filter_radius,
+                            self.space_grid,)
+    
     def _phase_filter(self, phase_mask: np.ndarray) -> np.ndarray:
         '''Applies a conic filter on the phase mask. The filtering action is equivalent to a local weighted averaging of the phase.
         Note that due to the circular behavior of phase, a direct averaging of phase values can lead to incorrect results. 
@@ -712,12 +951,26 @@ class Simulation:
 
     def _value_and_grad(self, target):
         '''
+        Propagates the source field associated with the given target. 
+        Returns the value of the cost function and its gradient with respect to phase parameters.
 
+        Args:
+            target: The target object for which the cost function and gradient are computed.
+
+        Returns:
+            C_s: The value of the cost function.
+            grads: The gradient of the cost function with respect to phase parameters.
         '''
         source = target.get_associated_source()
         wavelength = source.get_wavelength()
 
         self._update_wavelength(wavelength)
+
+        #if use_unit_cells is active, then we the normalized parameters, which
+        #represent (filtered) normalized parameters of the unit cells, need to be converted to actual phase values.
+        #The actual phase values those diameters correspond to depend on the current unit cell and wavelength
+        if self.use_unit_cells: #only necessary if using normalized diameters, otherwise the filtered phase mask is already set.
+            self.filtered_phase_mask[:] = self.current_unit_cell.get_phase_from_norm_param(self.filtered_w_norm)
 
         self._forward_propagate(source)
 
@@ -891,58 +1144,42 @@ class Simulation:
         
         return epigraph
 
+    def _split_masks(self, arr, mask_size=None):
+        '''
+        Splits an array that concatenates all the phase masks into a list with one entry (a view) per phase mask.
+        mask_size defaults to the full size S of a single mask.
+        '''
+        if mask_size is None:
+            mask_size = self.space_grid.get_S()
+        return [arr[i*mask_size:(i+1)*mask_size] for i in range(self.num_phase_masks)]
+
     def _cost_fun(self, x, grad):
         self.iter_num[0] = self.iter_num[0] + 1
+
+        #x holds one first quadrant per mask if xy_symmetry is used, otherwise the full masks
         if self.space_grid.xy_symmetry:
-            if self.num_phase_masks == 2:
-                ms1_first_quadrant = x[:self.space_grid.get_S_symm()].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
-                ms2_first_quadrant = x[self.space_grid.get_S_symm():].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
-                ms1 = self._expand_symmetrize(ms1_first_quadrant)
-                ms2 = self._expand_symmetrize(ms2_first_quadrant)
-            elif self.num_phase_masks == 3:
-                ms1_first_quadrant = x[:self.space_grid.get_S_symm()].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
-                ms2_first_quadrant = x[self.space_grid.get_S_symm():2*self.space_grid.get_S_symm()].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
-                ms3_first_quadrant = x[2*self.space_grid.get_S_symm():].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
-                ms1 = self._expand_symmetrize(ms1_first_quadrant)
-                ms2 = self._expand_symmetrize(ms2_first_quadrant)
-                ms3 = self._expand_symmetrize(ms3_first_quadrant)
+            ms = [self._expand_symmetrize(quadrant) for quadrant in self._split_masks(x, self.space_grid.get_S_symm())]
         else:
-            if self.num_phase_masks == 2:
-                ms1 = x[:self.space_grid.get_dof()//2]
-                ms2 = x[self.space_grid.get_dof()//2:]
-            elif self.num_phase_masks == 3:
-                ms1 = x[:self.space_grid.get_dof()//3]
-                ms2 = x[self.space_grid.get_dof()//3:2*self.space_grid.get_dof()//3]
-                ms3 = x[2*self.space_grid.get_dof()//3:]
+            ms = self._split_masks(x, self.space_grid.get_dof() // self.num_phase_masks)
 
-        if self.num_phase_masks == 2:
-            all_ms = np.concatenate((ms1, ms2))
-        elif self.num_phase_masks == 3:
-            all_ms = np.concatenate((ms1, ms2, ms3))
+        self.w_norm[:] = np.concatenate(ms)
 
-        self.w_norm[:] = all_ms
-        self.phase_mask[:] = self._phase_given_w(self.w_norm)
-        
-        if self.use_filtering:
-            if self.num_phase_masks == 2:
-                phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
-                phase_mask_2 = self.phase_mask[self.space_grid.get_S():]
-                filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
-                filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
-            elif self.num_phase_masks == 3:
-                phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
-                phase_mask_2 = self.phase_mask[self.space_grid.get_S():2*self.space_grid.get_S()]
-                phase_mask_3 = self.phase_mask[2*self.space_grid.get_S():]
-                filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
-                filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
-                filtered_phase_mask_3 = self._phase_filter(phase_mask_3)
-
-            if self.num_phase_masks == 2:
-                self.filtered_phase_mask[:] = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
-            elif self.num_phase_masks == 3:
-                self.filtered_phase_mask[:] = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2, filtered_phase_mask_3))
+        #after having set w_norm, we filter. With unit cells the filter acts on the normalized parameters and the phase
+        #is retrieved per target in _value_and_grad (it depends on the wavelength); otherwise the filter acts on the phase.
+        w_masks = self._split_masks(self.w_norm)
+        if self.use_unit_cells:
+            if self.use_filtering:
+                filtered_w_masks = [self._normParam_filter(w) for w in w_masks]
+            else:
+                filtered_w_masks = [np.copy(w) for w in w_masks]
+            self.filtered_w_norm = np.concatenate(filtered_w_masks)
         else:
-            self.filtered_phase_mask[:] = self.phase_mask
+            phase_masks = [self._phase_given_w(w) for w in w_masks]
+            if self.use_filtering:
+                filtered_phase_masks = [self._phase_filter(phase) for phase in phase_masks]
+            else:
+                filtered_phase_masks = phase_masks
+            self.filtered_phase_mask[:] = np.concatenate(filtered_phase_masks)
 
         #after the phase mask is set, we test the same mask across all targets
         C_all_wavelengths = []
@@ -951,49 +1188,38 @@ class Simulation:
 
         for target in self.targets:
 
-            C, full_grads = self._value_and_grad(target) 
+            C, full_grads = self._value_and_grad(target)  # full_grads = dC / dPhi
 
             C_all_wavelengths.append(C)
             tested_wavelengths.append(target.get_wavelength())
+            if self.use_unit_cells:
+                #dC/dw = dC/dphi * dphi/dw, evaluated at the filtered parameters
+                full_grads = [g * self.current_unit_cell.get_complete_gradient_from_norm_param(fw)
+                              for g, fw in zip(full_grads, filtered_w_masks)]
+
             if self.use_filtering:
-                if self.num_phase_masks == 2:
-                    full_grad_1, full_grad_2 = full_grads
-                    jac_grad_1 = tensor_jacobian_product(self._phase_filter)(phase_mask_1, full_grad_1)
-                    jac_grad_2 = tensor_jacobian_product(self._phase_filter)(phase_mask_2, full_grad_2)
-                elif self.num_phase_masks == 3:
-                    full_grad_1, full_grad_2, full_grad_3 = full_grads
-                    jac_grad_1 = tensor_jacobian_product(self._phase_filter)(phase_mask_1, full_grad_1)
-                    jac_grad_2 = tensor_jacobian_product(self._phase_filter)(phase_mask_2, full_grad_2)
-                    jac_grad_3 = tensor_jacobian_product(self._phase_filter)(phase_mask_3, full_grad_3)
+                #backpropagate through the filter, which acts on w (unit cells) or on the phase (no unit cells)
+                if self.use_unit_cells:
+                    filter_fun, filter_inputs = self._normParam_filter, w_masks
+                else:
+                    filter_fun, filter_inputs = self._phase_filter, phase_masks
+                jac_grads = [tensor_jacobian_product(filter_fun)(inp, g) for inp, g in zip(filter_inputs, full_grads)]
             else:
-                if self.num_phase_masks == 2:
-                    full_grad_1, full_grad_2 = full_grads
-                    jac_grad_1 = full_grad_1
-                    jac_grad_2 = full_grad_2
-                elif self.num_phase_masks == 3:
-                    full_grad_1, full_grad_2, full_grad_3 = full_grads
-                    jac_grad_1 = full_grad_1
-                    jac_grad_2 = full_grad_2
-                    jac_grad_3 = full_grad_3
+                jac_grads = list(full_grads)
 
             if self.space_grid.xy_symmetry:
-                jac_grad_1_symm = self._reduce_symmetrized_gradient(jac_grad_1)
-                jac_grad_2_symm = self._reduce_symmetrized_gradient(jac_grad_2)
-                if self.num_phase_masks == 2:
-                    jac_grad = np.concatenate((jac_grad_1_symm, jac_grad_2_symm), axis=0)
-                elif self.num_phase_masks == 3:
-                    jac_grad_3_symm = self._reduce_symmetrized_gradient(jac_grad_3)
-                    jac_grad = np.concatenate((jac_grad_1_symm, jac_grad_2_symm, jac_grad_3_symm), axis=0)
-            else:
-                if self.num_phase_masks == 2:
-                    jac_grad = np.concatenate((jac_grad_1, jac_grad_2),axis=0)
-                elif self.num_phase_masks == 3:
-                    jac_grad = np.concatenate((jac_grad_1, jac_grad_2, jac_grad_3),axis=0)
+                jac_grads = [self._reduce_symmetrized_gradient(j) for j in jac_grads]
+            jac_grad = np.concatenate(jac_grads, axis=0) # = (dC / dPhi) * (dw_f / dw), recall Phi = 2pi * w_f
 
+            #the gradient depends on wavelength, because phase of the unit cell is wavelength-dependent
             grad_partial[:] += jac_grad
 
         if grad.size > 0:
-            grad[:] = grad_partial * 2 * np.pi / len(self.targets) 
+
+            if self.use_unit_cells:
+                grad[:] = grad_partial / len(self.targets)
+            else:
+                grad[:] = grad_partial * 2 * np.pi / len(self.targets) 
 
         #the new cost function considers the average overlap across all wavelengths.
         self.opt_history.append(np.mean(C_all_wavelengths))
@@ -1032,18 +1258,19 @@ class Simulation:
         This method sets up the optimizer based on the chosen strategy.
 
         '''
-        if self.use_filtering:
-            if self.num_phase_masks == 2:
-                filtered_phase_mask_1 = self._phase_filter(self.phase_mask[:self.space_grid.get_S()])
-                filtered_phase_mask_2 = self._phase_filter(self.phase_mask[self.space_grid.get_S():])
-                self.filtered_phase_mask = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
-            elif self.num_phase_masks == 3:
-                filtered_phase_mask_1 = self._phase_filter(self.phase_mask[:self.space_grid.get_S()])
-                filtered_phase_mask_2 = self._phase_filter(self.phase_mask[self.space_grid.get_S():2*self.space_grid.get_S()])
-                filtered_phase_mask_3 = self._phase_filter(self.phase_mask[2*self.space_grid.get_S():])
-                self.filtered_phase_mask = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2, filtered_phase_mask_3))
-        else:
-            self.filtered_phase_mask = self.phase_mask
+        #this filtering seems unnecessary, commenting it out for the moment 12/10/2026
+        # if self.use_filtering:
+        #     if self.num_phase_masks == 2:
+        #         filtered_phase_mask_1 = self._phase_filter(self.phase_mask[:self.space_grid.get_S()])
+        #         filtered_phase_mask_2 = self._phase_filter(self.phase_mask[self.space_grid.get_S():])
+        #         self.filtered_phase_mask = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
+        #     elif self.num_phase_masks == 3:
+        #         filtered_phase_mask_1 = self._phase_filter(self.phase_mask[:self.space_grid.get_S()])
+        #         filtered_phase_mask_2 = self._phase_filter(self.phase_mask[self.space_grid.get_S():2*self.space_grid.get_S()])
+        #         filtered_phase_mask_3 = self._phase_filter(self.phase_mask[2*self.space_grid.get_S():])
+        #         self.filtered_phase_mask = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2, filtered_phase_mask_3))
+        # else:
+        #     self.filtered_phase_mask = self.phase_mask
 
         mask_upper_bounds = self.norm_phase_max * np.where(self.space_grid.get_X().flatten()**2 + self.space_grid.get_Y().flatten()**2 < (self.ms_max_avail_diameter/2)**2, 1, 0)
         mask_upper_bounds_full = np.tile(mask_upper_bounds,self.num_phase_masks)
@@ -1099,68 +1326,45 @@ class Simulation:
 
     def _export_results(self):
         '''
-        Placeholder method for exporting the results of the optimization.
-        This method should be implemented to save the relevant data.
+        Internal method to export results after the end of the optimization loop
         '''
         #intermediate fields
         #intermediate_field[0] is on MS1
         #intermediate_field[1] is on MS2
         #intermediate_field[2] is the output
-        for i,field in enumerate(self.intermediate_electric_fields):
-            np.save(f"{self.results_folder}/intermediate_electric_fields_{i}.npy", field)
-            make_2Dplot_of(field, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="amplitude", save_name=f"{self.results_folder}/intermediate_electric_fields_{i}_plot")
-            make_2Dplot_of(field, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="phase", save_name=f"{self.results_folder}/intermediate_electric_fields_{i}_phase_plot")
 
-        #output fields
-        output_field = []
-        for i,source in enumerate(self.sources):
-            self._forward_propagate(source)
-            output_field.append(self.intermediate_electric_fields[-1])
-
-            np.save(f"{self.results_folder}/output_fields_{i}.npy", output_field[-1])
-            make_2Dplot_of(output_field[-1], self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="amplitude", save_name=f"{self.results_folder}/output_fields_{i}_plot")
-            make_2Dplot_of(output_field[-1], self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="phase", save_name=f"{self.results_folder}/output_fields_{i}_phase_plot")
-
-        #phase masks
-        if self.num_phase_masks == 2:
-            phase_mask_1 = self._phase_given_w(self.w_norm[:self.space_grid.get_S()]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
-            phase_mask_2 = self._phase_given_w(self.w_norm[self.space_grid.get_S():]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
-        elif self.num_phase_masks == 3:
-            phase_mask_1 = self._phase_given_w(self.w_norm[:self.space_grid.get_S()]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
-            phase_mask_2 = self._phase_given_w(self.w_norm[self.space_grid.get_S():2*self.space_grid.get_S()]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
-            phase_mask_3 = self._phase_given_w(self.w_norm[2*self.space_grid.get_S():]).reshape((self.space_grid.get_Nx(), self.space_grid.get_Ny()))
-        
-        if self.use_filtering:
-            if self.num_phase_masks == 2:
-                filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
-                filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
-            elif self.num_phase_masks == 3:
-                filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
-                filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
-                filtered_phase_mask_3 = self._phase_filter(phase_mask_3)
+        w_masks = self._split_masks(self.w_norm)
+        if self.use_unit_cells:
+            #true diameters are saved; all unit cells of this simulation share the same parameter range
+            if self.use_filtering:
+                w_masks = [self._normParam_filter(w) for w in w_masks]
+            masks = [self.unit_cells[0].get_param_from_norm(w) for w in w_masks]
         else:
-            if self.num_phase_masks == 2:
-                filtered_phase_mask_1 = phase_mask_1
-                filtered_phase_mask_2 = phase_mask_2
-            elif self.num_phase_masks == 3:
-                filtered_phase_mask_1 = phase_mask_1
-                filtered_phase_mask_2 = phase_mask_2
-                filtered_phase_mask_3 = phase_mask_3
-        make_2Dplot_of(phase_mask_1, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/phase_mask_1_plot")
-        make_2Dplot_of(phase_mask_2, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/phase_mask_2_plot")
-        make_2Dplot_of(filtered_phase_mask_1, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/filtered_phase_mask_1_plot")
-        make_2Dplot_of(filtered_phase_mask_2, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/filtered_phase_mask_2_plot")
-        if self.num_phase_masks == 3:
-            make_2Dplot_of(phase_mask_3, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/phase_mask_3_plot")
-            make_2Dplot_of(filtered_phase_mask_3, self.space_grid.get_X(), self.space_grid.get_Y(), plot_zoom_x=1e6*self.get_ms_max_avail_diameter()/2, plot_zoom_y=1e6*self.get_ms_max_avail_diameter()/2, choose_quantity="phase_mask", save_name=f"{self.results_folder}/filtered_phase_mask_3_plot")
+            masks = [self._phase_given_w(w) for w in w_masks]
+            if self.use_filtering:
+                masks = [self._phase_filter(m) for m in masks]
 
-        np.save(f"{self.results_folder}/optimized_phase_mask_1.npy", phase_mask_1)
-        np.save(f"{self.results_folder}/optimized_phase_mask_2.npy", phase_mask_2)
-        np.save(f"{self.results_folder}/filtered_phase_mask_1.npy", filtered_phase_mask_1)
-        np.save(f"{self.results_folder}/filtered_phase_mask_2.npy", filtered_phase_mask_2)
-        if self.num_phase_masks == 3:
-            np.save(f"{self.results_folder}/optimized_phase_mask_3.npy", phase_mask_3)
-            np.save(f"{self.results_folder}/filtered_phase_mask_3.npy", filtered_phase_mask_3)
+
+        #make plots for every mask, and adjust whether it represents diameters or phase values
+        #the plot should be zoomed over the maximum metasurface diameter that is allowed by the optimization
+        plot_zoom = self.get_ms_max_avail_diameter()
+        for i, mask in enumerate(masks, start=1):
+            fig, ax = plt.subplots()
+            if self.use_unit_cells:
+                im = ax.pcolormesh(self.space_grid.X*1e6, self.space_grid.Y*1e6, mask.reshape(self.space_grid.get_grid_shape()),rasterized=True)
+                fig.colorbar(im, ax=ax)
+                ax.set_title(f"Mask {i} (Diameters)")
+            else:
+                im = ax.pcolormesh(self.space_grid.X*1e6, self.space_grid.Y*1e6, mask, cmap='hsv', rasterized = True)
+                fig.colorbar(im, ax=ax)
+                ax.set_title(f"Mask {i} (Phase)")
+            ax.set_xlim(-plot_zoom/2*1e6, plot_zoom/2*1e6)
+            ax.set_ylim(-plot_zoom/2*1e6, plot_zoom/2*1e6)
+            plt.savefig(f"{self.results_folder}/mask_{i}.pdf")
+            plt.close(fig)
+
+        for i, mask in enumerate(masks, start=1):
+            np.save(f"{self.results_folder}/mask_{i}.npy", mask.reshape(self.space_grid.get_grid_shape()))
 
     def get_best_opt_val(self):
         if self.is_optimized_flag:
@@ -1214,6 +1418,7 @@ class Simulation:
             self.w_norm = np.zeros((self.num_phase_masks*self.space_grid.get_S()))
             self.w_norm_symm = np.zeros(self.space_grid.get_dof())
             self.phase_mask = self._phase_given_w(self.w_norm)
+            self.filtered_phase_mask = np.zeros_like(self.w_norm)
             
             #initialize intermediate fields
             self.intermediate_electric_fields = [None] * (self.num_phase_masks + 1)
@@ -1339,33 +1544,10 @@ class Simulation:
                     if self.num_phase_masks == 2:
                         self.w_norm[:self.space_grid.get_S()] = self._expand_symmetrize(self.w_norm_symm[:self.space_grid.get_S_symm()])
                         self.w_norm[self.space_grid.get_S():] = self._expand_symmetrize(self.w_norm_symm[self.space_grid.get_S_symm():])
-                        self.phase_mask[:] = self._phase_given_w(self.w_norm)
                     elif self.num_phase_masks == 3:
                         self.w_norm[:self.space_grid.get_S()] = self._expand_symmetrize(self.w_norm_symm[:self.space_grid.get_S_symm()])
                         self.w_norm[self.space_grid.get_S():2*self.space_grid.get_S()] = self._expand_symmetrize(self.w_norm_symm[self.space_grid.get_S_symm():2*self.space_grid.get_S_symm()])
                         self.w_norm[2*self.space_grid.get_S():] = self._expand_symmetrize(self.w_norm_symm[2*self.space_grid.get_S_symm():])
-                        self.phase_mask[:] = self._phase_given_w(self.w_norm)
-
-                    if self.use_filtering:
-                        if self.num_phase_masks == 2:
-                            phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
-                            phase_mask_2 = self.phase_mask[self.space_grid.get_S():]
-                            filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
-                            filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
-                            self.filtered_phase_mask[:] = np.concatenate([filtered_phase_mask_1, filtered_phase_mask_2])
-                        elif self.num_phase_masks == 3:
-                            phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
-                            phase_mask_2 = self.phase_mask[self.space_grid.get_S():2*self.space_grid.get_S()]
-                            phase_mask_3 = self.phase_mask[2*self.space_grid.get_S():]
-                            filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
-                            filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
-                            filtered_phase_mask_3 = self._phase_filter(phase_mask_3)
-                            self.filtered_phase_mask[:] = np.concatenate([filtered_phase_mask_1, filtered_phase_mask_2, filtered_phase_mask_3])
-                    else:
-                        self.filtered_phase_mask[:] = self.phase_mask
-                    
-                    self.is_optimization_set = True
-                    self.best_opt_val = self.solver.last_optimum_value()
                 else:
                     if self.strategy == 'epigraph':
                         self.epigraph_w_norm = np.insert(self.w_norm, 0, 0)
@@ -1375,25 +1557,6 @@ class Simulation:
                         self.w_norm[:] = self.solver.optimize(self.w_norm)
                     else:
                         raise ValueError(f"Unknown strategy: {self.strategy}")
-                    self.phase_mask[:] = self._phase_given_w(self.w_norm)
-                    
-                    if self.use_filtering:
-                        if self.num_phase_masks == 2:
-                            phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
-                            phase_mask_2 = self.phase_mask[self.space_grid.get_S():]
-                            filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
-                            filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
-                            self.filtered_phase_mask[:] = np.concatenate([filtered_phase_mask_1, filtered_phase_mask_2])
-                        elif self.num_phase_masks == 3:
-                            phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
-                            phase_mask_2 = self.phase_mask[self.space_grid.get_S():2*self.space_grid.get_S()]
-                            phase_mask_3 = self.phase_mask[2*self.space_grid.get_S():]
-                            filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
-                            filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
-                            filtered_phase_mask_3 = self._phase_filter(phase_mask_3)
-                            self.filtered_phase_mask[:] = np.concatenate([filtered_phase_mask_1, filtered_phase_mask_2, filtered_phase_mask_3])
-                    else:
-                        self.filtered_phase_mask[:] = self.phase_mask
                     
                     self.is_optimized_flag = True
                     self.best_opt_val = self.solver.last_optimum_value()

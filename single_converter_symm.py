@@ -25,7 +25,7 @@ d = np.array([d0, d1, d2])
 
 ms_max_available_diameter = 122 #[um]
 output_fiber_core_diameter = 19 #[um]
-opt_max_eval = 140
+opt_max_eval = 1000
 
 space_grid = pid.SpaceGrid(
     side_pixels=N, 
@@ -60,6 +60,19 @@ targets = [pid.Target(input_field=target_fields[i],
 
 #targets[0].plot2D(plot_zoom_x=38,plot_zoom_y=38,choose_quantity='amplitude', save_name='results/target_field')
 
+#import unit cell data
+unit_cell_diameters_wvl_1530 = np.load("unit_cell/unit_cell_center_1530_h900nm_res50_wvl_diameters.npy")
+unit_cell_diameters_wvl_1550 = np.load("unit_cell/unit_cell_center_1550_h900nm_res50_wvl_diameters.npy")
+unit_cell_diameters_wvl_1570 = np.load("unit_cell/unit_cell_center_1570_h900nm_res50_wvl_diameters.npy")
+unit_cell_phases_wvl_1530 = np.load("unit_cell/unit_cell_center_1530_h900nm_res50_wvl_mode_phase.npy")
+unit_cell_phases_wvl_1550 = np.load("unit_cell/unit_cell_center_1550_h900nm_res50_wvl_mode_phase.npy")
+unit_cell_phases_wvl_1570 = np.load("unit_cell/unit_cell_center_1570_h900nm_res50_wvl_mode_phase.npy")
+#construct the UnitCell objects
+unit_cell_1530 = pid.UnitCell(wavelength=1.530, tune_param=unit_cell_diameters_wvl_1530, sim_phase=unit_cell_phases_wvl_1530)
+unit_cell_1550 = pid.UnitCell(wavelength=1.550, tune_param=unit_cell_diameters_wvl_1550, sim_phase=unit_cell_phases_wvl_1550)
+unit_cell_1570 = pid.UnitCell(wavelength=1.570, tune_param=unit_cell_diameters_wvl_1570, sim_phase=unit_cell_phases_wvl_1570)
+unit_cells_list = [unit_cell_1530, unit_cell_1550, unit_cell_1570]
+
 #setup the simulation instance
 simulation = pid.Simulation(
     sources=sources,
@@ -74,8 +87,9 @@ simulation.set_optimization(
     opt_param_max=1,
     ms_max_avail_diameter=ms_max_available_diameter,
     phase_mask_init_size=output_fiber_core_diameter/3,
+    unit_cells=unit_cells_list,
     opt_max_eval=opt_max_eval,
-    conic_filter_radius=1.0,    
+    #conic_filter_radius=1.0,    
 )
 
 simulation.run()
