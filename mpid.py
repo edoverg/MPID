@@ -7,9 +7,9 @@ import pyfftw
 import nlopt
 from autograd import tensor_jacobian_product, grad as gd
 import autograd.numpy as npa
-from filters import conic_filter
+from filters import Filter
 
-def make_2Dplot_of(given_field:np.ndarray, grid_X:np.ndarray, grid_Y:np.ndarray, plot_zoom_x:float,plot_zoom_y:float,choose_quantity="amplitude",save_name="plot") -> None:
+def make_2Dplot_of(given_field:np.ndarray, grid_X:np.ndarray, grid_Y:np.ndarray, plot_zoom_x:float, plot_zoom_y:float, choose_quantity="amplitude", save_name="plot") -> None:
     '''Makes a plot of the given 2D field in a zoomed region. 
     Saves the plot with the chosen filename to a PDF file. 
     Args:
@@ -25,7 +25,6 @@ def make_2Dplot_of(given_field:np.ndarray, grid_X:np.ndarray, grid_Y:np.ndarray,
     fig, ax = plt.subplots(figsize=(6, 6))
     if choose_quantity == "amplitude":
         ax.pcolormesh(grid_X*1e6,grid_Y*1e6,np.abs(given_field_2d),rasterized=True)
-        #add a colorbar for amplitude
         plt.colorbar(ax.pcolormesh(grid_X*1e6,grid_Y*1e6,np.abs(given_field_2d),rasterized=True), ax=ax)
     elif choose_quantity == "phase":
         ax.pcolormesh(grid_X*1e6,grid_Y*1e6,(np.angle(given_field_2d)+2*np.pi)%(2*np.pi), cmap='hsv', vmin=0, vmax=2*np.pi, rasterized=True)
@@ -595,9 +594,11 @@ class Simulation:
             self.filter_radius = None
 
         if conic_filter_radius is not None:
-            self.filter_radius = conic_filter_radius 
+            self.filter_radius = conic_filter_radius
+            self.filter_obj = Filter(conic_filter_radius, self.space_grid)
         else:
             self.filter_radius = None
+            self.filter_obj = None
 
     def get_sources(self):
         return self.sources
@@ -632,7 +633,8 @@ class Simulation:
     def _update_wavelength(self, new_wavelength):
         '''
         Updates the operating wavelength and related vectors (lda_vector and k_vectors) based on the new wavelength.
-        The new_wavelength should be provided in meters.
+        The new_wavelength should be provided in meters. If use_unit_cells is True, updating the wavelength
+        will also update the current active unit cell.
         Args:
             new_wavelength (float): The new operating wavelength in meters.
         '''
@@ -771,9 +773,10 @@ class Simulation:
     def _normParam_filter(self, norm_param: np.ndarray) -> np.ndarray:
         '''Applies a conic filter on normalized parameters. Normalized parameters are the ones the optimization algorithm
         uses and are always in the range [0,1].'''
-        return conic_filter(norm_param,
-                            self.filter_radius,
-                            self.space_grid,)
+        # return conic_filter(norm_param,
+        #                     self.filter_radius,
+        #                     self.space_grid,)
+        return self.filter_obj.apply_filter(norm_param)
     
     def _phase_filter(self, phase_mask: np.ndarray) -> np.ndarray:
         '''Applies a conic filter on the phase mask. The filtering action is equivalent to a local weighted averaging of the phase.
@@ -794,17 +797,18 @@ class Simulation:
         phase_mask_cos = npa.cos(phase_mask)
         phase_mask_sin = npa.sin(phase_mask)
 
-        phase_mask_filtered_cos = conic_filter(
-            phase_mask_cos,
-            self.filter_radius,
-            self.space_grid,
-        )
-
-        phase_mask_filtered_sin = conic_filter(
-            phase_mask_sin,
-            self.filter_radius,
-            self.space_grid,
-        )
+        # phase_mask_filtered_cos = conic_filter(
+        #     phase_mask_cos,
+        #     self.filter_radius,
+        #     self.space_grid,
+        # )
+        phase_mask_filtered_cos = self.filter_obj.apply_filter(phase_mask_cos)
+        # phase_mask_filtered_sin = conic_filter(
+        #     phase_mask_sin,
+        #     self.filter_radius,
+        #     self.space_grid,
+        # )
+        phase_mask_filtered_sin = self.filter_obj.apply_filter(phase_mask_sin)
         return npa.arctan2(phase_mask_filtered_sin, phase_mask_filtered_cos)
 
     def _forward_propagate(self, source_object: Source, returns_field: bool = False):
@@ -1184,7 +1188,8 @@ class Simulation:
         #after the phase mask is set, we test the same mask across all targets
         C_all_wavelengths = []
         tested_wavelengths = []
-        grad_partial = np.zeros_like(grad)
+        #per-mask gradient w.r.t. the filter output, accumulated over targets (the filter Jacobian is target-independent)
+        grads_wrt_filtered = None
 
         for target in self.targets:
 
@@ -1197,22 +1202,27 @@ class Simulation:
                 full_grads = [g * self.current_unit_cell.get_complete_gradient_from_norm_param(fw)
                               for g, fw in zip(full_grads, filtered_w_masks)]
 
-            if self.use_filtering:
-                #backpropagate through the filter, which acts on w (unit cells) or on the phase (no unit cells)
-                if self.use_unit_cells:
-                    filter_fun, filter_inputs = self._normParam_filter, w_masks
-                else:
-                    filter_fun, filter_inputs = self._phase_filter, phase_masks
-                jac_grads = [tensor_jacobian_product(filter_fun)(inp, g) for inp, g in zip(filter_inputs, full_grads)]
+            #the gradient depends on wavelength, because phase of the unit cell is wavelength-dependent.
+            #Each mask accumulates only its own gradient.
+            if grads_wrt_filtered is None:
+                grads_wrt_filtered = [np.array(g, dtype=float) for g in full_grads]
             else:
-                jac_grads = list(full_grads)
+                for k, g in enumerate(full_grads):
+                    grads_wrt_filtered[k] += g
 
-            if self.space_grid.xy_symmetry:
-                jac_grads = [self._reduce_symmetrized_gradient(j) for j in jac_grads]
-            jac_grad = np.concatenate(jac_grads, axis=0) # = (dC / dPhi) * (dw_f / dw), recall Phi = 2pi * w_f
+        #a single backward pass per mask through the filter, which acts on w (unit cells) or on the phase (no unit cells)
+        if self.use_filtering:
+            if self.use_unit_cells:
+                filter_fun, filter_inputs = self._normParam_filter, w_masks
+            else:
+                filter_fun, filter_inputs = self._phase_filter, phase_masks
+            jac_grads = [tensor_jacobian_product(filter_fun)(inp, g) for inp, g in zip(filter_inputs, grads_wrt_filtered)]
+        else:
+            jac_grads = list(grads_wrt_filtered)
 
-            #the gradient depends on wavelength, because phase of the unit cell is wavelength-dependent
-            grad_partial[:] += jac_grad
+        if self.space_grid.xy_symmetry:
+            jac_grads = [self._reduce_symmetrized_gradient(j) for j in jac_grads]
+        grad_partial = np.concatenate(jac_grads, axis=0) # = sum over targets of (dC / dPhi) * (dw_f / dw), recall Phi = 2pi * w_f
 
         if grad.size > 0:
 
@@ -1454,64 +1464,125 @@ class Simulation:
         
         self.set_space_grid(new_space_grid)
 
-    def inject_phase_masks(self, input_phase_masks: list):
+    def inject_phase_masks(self, input_phase_masks: list, apply_filtering: bool = True):
         """
-        Inject the specified phase masks into the simulation.
+        Inject the specified phase masks into the simulation, optionally applying filtering based on the `apply_filtering` flag.
         Args:
             input_phase_masks (list): A list of phase masks, flattened, to be injected into the simulation. 
+            apply_filtering (bool): Apply filtering to the injected phase masks. Defaults to True.
         Returns:
             None
         """
-        #check if the length of the list of input_phase_masks we are trying to inject
-        #has the same number of phase masks in this simulation object.
         if len(input_phase_masks) != self.num_phase_masks:
             raise ValueError(f"Expected {self.num_phase_masks} phase masks, but got {len(input_phase_masks)}.")
+        
         for i, phase_mask in enumerate(input_phase_masks):
+            #set the phase mask attribute with the input phase masks
             self.phase_mask[i*self.space_grid.get_S():(i+1)*self.space_grid.get_S()] = phase_mask
-            self.w_norm[i*self.space_grid.get_S():(i+1)*self.space_grid.get_S()] = self._w_given_phase(phase_mask)
-        if self.use_filtering:
+            #self.w_norm[i*self.space_grid.get_S():(i+1)*self.space_grid.get_S()] = self._w_given_phase(phase_mask)
+        
+        if apply_filtering: #filtering is applied regardless of the global optimization setting
+            if self.use_unit_cells:
+                selected_filter = lambda x: self._normParam_filter(x)
+            else:
+                selected_filter = lambda x: self._phase_filter(x)
             if self.num_phase_masks == 2:
-                filtered_phase_mask_1 = self._phase_filter(self.phase_mask[:self.space_grid.get_S()])
-                filtered_phase_mask_2 = self._phase_filter(self.phase_mask[self.space_grid.get_S():])
+                filtered_phase_mask_1 = selected_filter(self.phase_mask[:self.space_grid.get_S()])
+                filtered_phase_mask_2 = selected_filter(self.phase_mask[self.space_grid.get_S():])
                 self.filtered_phase_mask = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
             elif self.num_phase_masks == 3:
-                filtered_phase_mask_1 = self._phase_filter(self.phase_mask[:self.space_grid.get_S()])
-                filtered_phase_mask_2 = self._phase_filter(self.phase_mask[self.space_grid.get_S():2*self.space_grid.get_S()])
-                filtered_phase_mask_3 = self._phase_filter(self.phase_mask[2*self.space_grid.get_S():])
+                filtered_phase_mask_1 = selected_filter(self.phase_mask[:self.space_grid.get_S()])
+                filtered_phase_mask_2 = selected_filter(self.phase_mask[self.space_grid.get_S():2*self.space_grid.get_S()])
+                filtered_phase_mask_3 = selected_filter(self.phase_mask[2*self.space_grid.get_S():])
                 self.filtered_phase_mask = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2, filtered_phase_mask_3))
         else:
             self.filtered_phase_mask = self.phase_mask
 
+        
 
-    def source_sweep(self, distances: np.ndarray = None, input_phase_masks: list = None):
+    def _update_phase_masks_with_diameters(self, input_diameters_masks: list, apply_filtering: bool = False):
         """
-        This method runs the propagation algorithm for the specified sources and targets in the simulation object.
-        For every propagation step, it enforces the same phase masks. It can optionally update propagation distances and phase masks. 
-        If not specified, it is assumed the simulation object has already been optimized and that the required quantities are already set.
-        It is useful for studying the wavelength-dependent performance of the system.
+        Constructs the phase masks based on the provided diameter masks and the currently active unit cell.
         Args:
-            distances (np.ndarray, optional): Array containing the propagation distances. If None, the current distances are used.
+            input_diameters_masks (list): A list of diameter masks, flattened, to be used for updating the phase masks.
+        Returns:
+            None
+        """
+        if len(input_diameters_masks) != self.num_phase_masks:
+            raise ValueError(f"Expected {self.num_phase_masks} masks, but got {len(input_diameters_masks)}.")
+
+        #check if unit current unit cell is set and not None
+        if self.current_unit_cell is None:
+            raise ValueError("Cannot generate phase masks from diameters if no unit cell is provided.")
+
+        mask1 = input_diameters_masks[0]
+        mask2 = input_diameters_masks[1] if self.num_phase_masks > 1 else None
+        mask3 = input_diameters_masks[2] if self.num_phase_masks > 2 else None
+
+        phase_mask_1 = self.current_unit_cell.get_phase_at_param(mask1)
+        phase_mask_2 = self.current_unit_cell.get_phase_at_param(mask2) 
+        phase_mask_3 = self.current_unit_cell.get_phase_at_param(mask3) if mask3 is not None else None
+
+        phase_mask_list = [phase_mask_1, phase_mask_2, phase_mask_3][:self.num_phase_masks]
+        self.inject_phase_masks(phase_mask_list, apply_filtering=apply_filtering)
+
+    def source_sweep(self, distances: np.ndarray = None, input_phase_masks: list = None, input_diameter_masks: list = None, apply_filtering: bool = True, save_output: bool = False):
+        """
+        Runs the propagation algorithm for the specified sources and targets in the simulation object. 
+        There are two operating modes of this method: if phase masks are provided via the `input_phase_masks` argument, 
+        If 'input_diameter_masks' is provided, phase masks are
+        updated based on the source wavelength and unit cell data. If none of the two are provided, the last phase masks
+        One cannot provide both `input_phase_masks` and `input_diameter_masks` simultaneously.
+        Example: if the simulation contains two targets T1 and T2, with associated sources S1, S2, at two distinct wavelengths L1, L2, passing input_diameters_masks
+        will update the phase masks for each source by selecting the appropriate unit cell based on the source wavelength and the provided diameter mask.
+        Unit cell data must be already be present in the simulation object.
+        It is typically used for studying the wavelength-dependent performance of the system.
+        Args:
+            distances (np.ndarray, optional): Array containing the propagation distances. If None, the current distances in the simulation object are used.
             input_phase_masks (list, optional): A list of phase masks to be injected into the simulation. If None, the current phase masks are used.
+            input_diameter_masks (list, optional): A list of diameter masks to be used for updating the phase masks based on the source wavelength and unit cell data.
+            apply_filtering (bool, optional): Controls filtering with higher priority than Simulation settings. Defaults to True.
+            save_output (bool, optional): Save the output results to a file. Default is False.
+
         Returns:
             dict: A dictionary mapping source wavelengths to the overlap between the output field and the associated target field.
         """
+
+        #setup
+        if input_diameter_masks is not None and input_phase_masks is not None:
+            raise ValueError("Cannot choose: both input_phase_masks and input_diameter_masks were provided.")
+
         results_dict = {}
 
         if distances is not None:
             self.update_propagation_distances(distances)
 
         if input_phase_masks is not None:
-            self.inject_phase_masks(input_phase_masks)
-        
+            self.inject_phase_masks(input_phase_masks, apply_filtering=apply_filtering)
+
+        if input_diameter_masks is not None:
+            use_unit_cells = True
+        else:
+            use_unit_cells = False
+
+        #simulate
         for target in self.targets:
             source = target.get_associated_source()
-            self._update_wavelength(source.get_wavelength())
+            wavelength = source.get_wavelength()
+            self._update_wavelength(wavelength)
+            #retrieve the appropriate phase mask from the simulation's active unit cell
+            if use_unit_cells:
+                self._update_phase_masks_with_diameters(input_diameter_masks, apply_filtering=apply_filtering)
             output_field = self._forward_propagate(source, returns_field = True)
             #compute the overlap between the output field and associated target field
             target_field = target.get_field(self.get_space_grid(), flatten = True)
 
             overlap = np.abs(np.sum(np.conj(target_field) * output_field))**2
             results_dict[source.get_wavelength()] = overlap
+            if save_output:
+                save_filename = f"{self.results_folder}/output_field_{wavelength*1e6}"
+                save_filename = save_filename.replace('.', '_') + ".npy"
+                np.save(save_filename, output_field)
 
         return results_dict
             

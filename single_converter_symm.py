@@ -25,7 +25,7 @@ d = np.array([d0, d1, d2])
 
 ms_max_available_diameter = 122 #[um]
 output_fiber_core_diameter = 19 #[um]
-opt_max_eval = 1000
+opt_max_eval = 600
 
 space_grid = pid.SpaceGrid(
     side_pixels=N, 
