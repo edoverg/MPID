@@ -1109,18 +1109,12 @@ class Simulation:
         if epigraph_constraint_satisfied:
             if max(mC_at_wavelengths) < self.best_epigraph:
                 self.best_epigraph = max(mC_at_wavelengths)
-                self.best_opt_val = max(mC_at_wavelengths)
-                #save the normalized parameters associated with the best epigraph
+                # note that this is done here and not after run(). This is different compared to how
+                # the 'mean' strategy is handled.
+                # because I have encountered some issues in managing the Nlopt best_opt_val. 
+                # In other words, that method does not seem to provide the answer I am after.
+                self.best_opt_val = - max(mC_at_wavelengths) #this is turned positive for compatibility with EGO
                 self.optimal_w_norm[:] = self.w_norm
-            #     fig, ax = plt.subplots()
-            #     ax.plot(tested_wavelength, mC_at_wavelengths, 'o-', label='-C')
-            #     ax.axhline(y=epigraph, color='r', linestyle='--', label='Epigraph')
-            #     ax.set_xlabel('Wavelength [um]')
-            #     ax.set_ylabel('-C')
-            #     ax.legend()
-            #     plt.savefig("results/constraints_eval.pdf")
-            #     plt.close()
-            # print("Current best epigraph:", self.best_epigraph)
 
         if gradient.size > 0:
             gradient[:,0] = -1
@@ -1148,7 +1142,7 @@ class Simulation:
         self.opt_history.append(epigraph)
 
         self._plot_history()
-        self.iter_num[:] += [self.iter_num[0]+1]
+        self.iter_num[:] += [self.iter_num[0] + 1]
         
         return epigraph
 

@@ -27,7 +27,8 @@ if not os.path.exists("results"):
 #Space grid definition
 N = 1025
 unit_cell_pitch = 0.650 #i.e., 650 [nm]
-
+strategy = 'epigraph'
+filter_radius = 1.5
 n0 = 1.444
 n1 = 1.0
 n2 = 1.444
@@ -35,7 +36,7 @@ mat_refr_index = np.array([n0, n1, n2])
 
 ms_max_available_diameter = 122 #[um]
 output_fiber_core_diameter = 19 #[um]
-opt_max_eval = 250
+opt_max_eval = 15
 
 def setup_optical_system()->pid.Simulation:
     '''
@@ -72,12 +73,12 @@ def setup_optical_system()->pid.Simulation:
                           field_norm=True) for i, (file, wvl) in enumerate(zip(target_files, wavelengths_to_test_um))]
 
     #import unit cell data
-    unit_cell_diameters_wvl_1500 = np.load("unit_cell/unit_cell_center_1500_h900nm_res50_wvl_diameters.npy")
-    unit_cell_diameters_wvl_1550 = np.load("unit_cell/unit_cell_center_1550_h900nm_res50_wvl_diameters.npy")
-    unit_cell_diameters_wvl_1600 = np.load("unit_cell/unit_cell_center_1600_h900nm_res50_wvl_diameters.npy")
-    unit_cell_phases_wvl_1500 = np.load("unit_cell/unit_cell_center_1500_h900nm_res50_wvl_mode_phase.npy")
-    unit_cell_phases_wvl_1550 = np.load("unit_cell/unit_cell_center_1550_h900nm_res50_wvl_mode_phase.npy")
-    unit_cell_phases_wvl_1600 = np.load("unit_cell/unit_cell_center_1600_h900nm_res50_wvl_mode_phase.npy")
+    unit_cell_diameters_wvl_1500 = np.load("unit_cell/final/export/unit_cell_diameter_P_0_65_h_0_9_1_5.npy")
+    unit_cell_diameters_wvl_1550 = np.load("unit_cell/final/export/unit_cell_diameter_P_0_65_h_0_9_1_55.npy")
+    unit_cell_diameters_wvl_1600 = np.load("unit_cell/final/export/unit_cell_diameter_P_0_65_h_0_9_1_6.npy")
+    unit_cell_phases_wvl_1500 = np.load("unit_cell/final/export/unit_cell_phase_P_0_65_h_0_9_1_5.npy")
+    unit_cell_phases_wvl_1550 = np.load("unit_cell/final/export/unit_cell_phase_P_0_65_h_0_9_1_55.npy")
+    unit_cell_phases_wvl_1600 = np.load("unit_cell/final/export/unit_cell_phase_P_0_65_h_0_9_1_6.npy")
     #construct the UnitCell objects
     unit_cell_1500 = pid.UnitCell(wavelength=1.50, tune_param=unit_cell_diameters_wvl_1500, sim_phase=unit_cell_phases_wvl_1500)
     unit_cell_1550 = pid.UnitCell(wavelength=1.55, tune_param=unit_cell_diameters_wvl_1550, sim_phase=unit_cell_phases_wvl_1550)
@@ -106,9 +107,9 @@ def setup_optical_system()->pid.Simulation:
         ms_max_avail_diameter=ms_max_available_diameter,
         phase_mask_init_size=output_fiber_core_diameter/3,
         opt_max_eval=opt_max_eval,
-        conic_filter_radius=1.5,
+        conic_filter_radius=filter_radius,
         unit_cells=unit_cells_list,
-        strategy='epigraph',
+        strategy=strategy,
         results_while_solving = False,
         save_results = False,
     )
@@ -279,7 +280,7 @@ def run_ego(initial_dataset, surrogate_model, n_ego_iter, xlimits, simulation):
         print(d_et_k)
         simulation.update_propagation_distances(d_et_k)
         simulation.run()
-        y_et_k = simulation.get_best_opt_val() #evaluate the objective function at the new point; y_et_k < 0
+        y_et_k = simulation.get_best_opt_val()
         x_et_k_tested = np.atleast_2d(x_et_k)
         x_et_k_tested_history.append(x_et_k_tested)
 
@@ -320,18 +321,22 @@ def run_ego(initial_dataset, surrogate_model, n_ego_iter, xlimits, simulation):
         for i in range(d0_grid.shape[0]):
             for j in range(d0_grid.shape[1]):
                 y_pred_grid[i,j] = sm.predict_values(np.atleast_2d([d0_grid[i,j], d1_grid[i,j]]))[0,0]
-        contour = ax.contourf(d0_grid, d1_grid, y_pred_grid, levels=50, cmap='viridis')
-        fig.colorbar(contour, ax=ax, label='predicted overlap')
+        levels = np.linspace(0, 1, 51)
+        contour = ax.contourf(d0_grid, d1_grid, y_pred_grid, levels=levels, cmap='viridis', vmin=0, vmax=1)
+        cbar = fig.colorbar(contour, ax=ax, label='Surrogate model')
+        cbar.set_ticks(np.arange(0, 1.01, 0.25))
+        cbar.ax.tick_params(labelsize=20)
+        cbar.ax.yaxis.label.set_size(20)
         ax.scatter(xdoe_train_loaded[:,0], xdoe_train_loaded[:,1], color='blue', label='DOE Points')
-        ax.scatter(x_data[len(xdoe_train_loaded):,0], x_data[len(xdoe_train_loaded):,1], color='red', label='EGO Evaluated Points')
-        ax.set_xlabel('d0 [um]', fontsize=15)
-        ax.set_ylabel('d1 [um]', fontsize=15)
+        ax.scatter(x_data[len(xdoe_train_loaded):,0], x_data[len(xdoe_train_loaded):,1], color='red', label='EGO Points')
+        ax.set_xlabel(r'$d_0\: [\mu m]$', fontsize=20)
+        ax.set_ylabel(r'$d_1\: [\mu m]$', fontsize=20)
+        ax.tick_params(axis='both', which='major', labelsize=20)
         ax.set_xlim(xlimits[0])
         ax.set_ylim(xlimits[1])
-        ax.legend(loc='upper left', framealpha=0.5, fontsize=15)
+        ax.legend(loc='upper left', framealpha=0.5, fontsize=20)
         for spine in ax.spines.values():
-            spine.set_linewidth(1.5)
-        ax.set_aspect('equal')
+            spine.set_linewidth(2)
         fig.tight_layout()
         fig.savefig(f'{surrogate_folder_name}/surrogate_landscape_{k}.pdf')
         plt.close(fig)
@@ -369,7 +374,7 @@ def run_ego(initial_dataset, surrogate_model, n_ego_iter, xlimits, simulation):
     ax = fig.add_subplot(111, projection='3d')
     surf = ax.plot_surface(d0_grid_mesh, d1_grid_mesh, sm_predictions, cmap='viridis', alpha=0.7, edgecolor='none')
     ax.scatter(xdoe_train_loaded[:,0], xdoe_train_loaded[:,1], ydoe_train_loaded.flatten(), color='blue', label='DOE Points')
-    ax.scatter(x_data[len(xdoe_train_loaded):,0], x_data[len(xdoe_train_loaded):,1], y_data[len(xdoe_train_loaded):].flatten(), color='red', label='EGO Evaluated Points')
+    ax.scatter(x_data[len(xdoe_train_loaded):,0], x_data[len(xdoe_train_loaded):,1], y_data[len(xdoe_train_loaded):].flatten(), color='red', label='EGO Points')
     ax.scatter([x_opt[0]], [x_opt[1]], [y_opt], color='green', s=100, label='Best Point', edgecolor='black')
     ax.set_xlabel('d0 [um]')
     ax.set_ylabel('d1 [um]')
@@ -380,16 +385,24 @@ def run_ego(initial_dataset, surrogate_model, n_ego_iter, xlimits, simulation):
 
     #contour plot
     fig, ax = plt.subplots(figsize=(8,6))
-    cp = ax.contourf(d0_grid_mesh, d1_grid_mesh, sm_predictions, levels=50, cmap='viridis')
-    fig.colorbar(cp, ax=ax, label='Surrogate Model Prediction')
+    levels = np.linspace(0, 1, 51)
+    cp = ax.contourf(d0_grid_mesh, d1_grid_mesh, sm_predictions, levels=levels, cmap='viridis', vmin=0, vmax=1)
+    cbar = fig.colorbar(cp, ax=ax, label='Surrogate model',)
+    cbar.set_ticks(np.arange(0, 1.01, 0.25))
+    #set colorbar label and tick font size 
+    cbar.ax.tick_params(labelsize=20)
+    cbar.ax.yaxis.label.set_size(20)
     ax.scatter(xdoe_train_loaded[:,0], xdoe_train_loaded[:,1], color='blue', label='DOE Points')
-    ax.scatter(x_data[len(xdoe_train_loaded):,0], x_data[len(xdoe_train_loaded):,1], color='red', label='EGO Evaluated Points')
+    ax.scatter(x_data[len(xdoe_train_loaded):,0], x_data[len(xdoe_train_loaded):,1], color='red', label='EGO Points')
     ax.scatter([x_opt[0]], [x_opt[1]], color='green', s=100, label='Best Point', edgecolor='black')
-    ax.set_xlabel('d0 [um]')
-    ax.set_ylabel('d1 [um]')
+    ax.set_xlabel(r'$d_0\: [\mu m]$', fontsize=20)
+    ax.set_ylabel(r'$d_1\: [\mu m]$', fontsize=20)
+    for spine in ax.spines.values():
+        spine.set_linewidth(2)
     ax.set_xlim(xlimits[0])
     ax.set_ylim(xlimits[1])
-    ax.legend(framealpha=0.5)
+    ax.tick_params(axis='both', which='major', labelsize=20)
+    ax.legend(framealpha=0.5, fontsize=20)
     fig.tight_layout()
     fig.savefig(f'{surrogate_folder_name}/refined_surrogate_model_contour.pdf')
     plt.close(fig)
@@ -460,12 +473,14 @@ if __name__ == "__main__":
 
     design_space = DesignSpace(xlimits, seed=seed)
     
-    ndoe = 20 #number of DOE samples
-    n_ego_iter = 15 #number of EGO refinement iterations
+    ndoe = 3 #number of DOE samples
+    n_ego_iter = 2 #number of EGO refinement iterations
     
     corr_function_name = 'matern32'
-    doe_folder_name = 'DOE_1_5'
-    surrogate_folder_name = corr_function_name + '_surrogate_filtered_1_5'
+    #replace . with _ in filter_radius if it is a float
+    filter_radius_str = str(filter_radius).replace('.', '_')
+    doe_folder_name = 'DOE_' + filter_radius_str
+    surrogate_folder_name = corr_function_name + '_surrogate_filtered_' + filter_radius_str
     if not os.path.exists(doe_folder_name):
         os.makedirs(doe_folder_name)
     if not os.path.exists(surrogate_folder_name):
