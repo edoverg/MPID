@@ -11,6 +11,11 @@ from sklearn.model_selection import KFold, LeaveOneOut
 from scipy.stats import norm
 from scipy.optimize import minimize
 import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.rcParams['mathtext.fontset'] = 'stix'
+matplotlib.rcParams['font.family'] = 'STIXGeneral'
+plt.rcParams['mathtext.default'] = 'regular'
+
 import matplotlib.image as mpimg
 import matplotlib.animation as animation
 import copy
@@ -21,7 +26,7 @@ if not os.path.exists("results"):
     os.makedirs("results")
 #Space grid definition
 N = 1025
-unit_cell_pitch = 0.700 #i.e., 700 [nm]
+unit_cell_pitch = 0.650 #i.e., 650 [nm]
 
 n0 = 1.444
 n1 = 1.0
@@ -30,7 +35,7 @@ mat_refr_index = np.array([n0, n1, n2])
 
 ms_max_available_diameter = 122 #[um]
 output_fiber_core_diameter = 19 #[um]
-opt_max_eval = 550
+opt_max_eval = 250
 
 def setup_optical_system()->pid.Simulation:
     '''
@@ -47,19 +52,19 @@ def setup_optical_system()->pid.Simulation:
     '''
     central_wavelength_um = 1.55
 
-    wavelengths_to_test_um = [1.53, 1.55, 1.57] #[um]
+    wavelengths_to_test_um = [1.50, 1.55, 1.60] #[um]
 
-    source_files = ["fiber_modes/SMF/SMF_LP01_field_distribution_lda_1530_N_1025.npy",
+    source_files = ["fiber_modes/SMF/SMF_LP01_field_distribution_lda_1500_N_1025.npy",
                     "fiber_modes/SMF/SMF_LP01_field_distribution_lda_1550_N_1025.npy",
-                    "fiber_modes/SMF/SMF_LP01_field_distribution_lda_1570_N_1025.npy"]
+                    "fiber_modes/SMF/SMF_LP01_field_distribution_lda_1600_N_1025.npy"]
 
     sources = [pid.Source(input_field=np.load(file), 
                           wavelength=wvl, 
                           field_norm=True) for file, wvl in zip(source_files, wavelengths_to_test_um)]
 
-    target_files = ["fiber_modes/FMF/FMF_LP21_field_distribution_lda_1530_N_1025.npy",
+    target_files = ["fiber_modes/FMF/FMF_LP21_field_distribution_lda_1500_N_1025.npy",
                     "fiber_modes/FMF/FMF_LP21_field_distribution_lda_1550_N_1025.npy",
-                    "fiber_modes/FMF/FMF_LP21_field_distribution_lda_1570_N_1025.npy"]
+                    "fiber_modes/FMF/FMF_LP21_field_distribution_lda_1600_N_1025.npy"]
 
     targets = [pid.Target(input_field=np.load(file), 
                           associated_source=sources[i], 
@@ -67,17 +72,17 @@ def setup_optical_system()->pid.Simulation:
                           field_norm=True) for i, (file, wvl) in enumerate(zip(target_files, wavelengths_to_test_um))]
 
     #import unit cell data
-    unit_cell_diameters_wvl_1530 = np.load("unit_cell/unit_cell_center_1530_h900nm_res50_wvl_diameters.npy")
+    unit_cell_diameters_wvl_1500 = np.load("unit_cell/unit_cell_center_1500_h900nm_res50_wvl_diameters.npy")
     unit_cell_diameters_wvl_1550 = np.load("unit_cell/unit_cell_center_1550_h900nm_res50_wvl_diameters.npy")
-    unit_cell_diameters_wvl_1570 = np.load("unit_cell/unit_cell_center_1570_h900nm_res50_wvl_diameters.npy")
-    unit_cell_phases_wvl_1530 = np.load("unit_cell/unit_cell_center_1530_h900nm_res50_wvl_mode_phase.npy")
+    unit_cell_diameters_wvl_1600 = np.load("unit_cell/unit_cell_center_1600_h900nm_res50_wvl_diameters.npy")
+    unit_cell_phases_wvl_1500 = np.load("unit_cell/unit_cell_center_1500_h900nm_res50_wvl_mode_phase.npy")
     unit_cell_phases_wvl_1550 = np.load("unit_cell/unit_cell_center_1550_h900nm_res50_wvl_mode_phase.npy")
-    unit_cell_phases_wvl_1570 = np.load("unit_cell/unit_cell_center_1570_h900nm_res50_wvl_mode_phase.npy")
+    unit_cell_phases_wvl_1600 = np.load("unit_cell/unit_cell_center_1600_h900nm_res50_wvl_mode_phase.npy")
     #construct the UnitCell objects
-    unit_cell_1530 = pid.UnitCell(wavelength=1.53, tune_param=unit_cell_diameters_wvl_1530, sim_phase=unit_cell_phases_wvl_1530)
+    unit_cell_1500 = pid.UnitCell(wavelength=1.50, tune_param=unit_cell_diameters_wvl_1500, sim_phase=unit_cell_phases_wvl_1500)
     unit_cell_1550 = pid.UnitCell(wavelength=1.55, tune_param=unit_cell_diameters_wvl_1550, sim_phase=unit_cell_phases_wvl_1550)
-    unit_cell_1570 = pid.UnitCell(wavelength=1.57, tune_param=unit_cell_diameters_wvl_1570, sim_phase=unit_cell_phases_wvl_1570)
-    unit_cells_list = [unit_cell_1530, unit_cell_1550, unit_cell_1570]
+    unit_cell_1600 = pid.UnitCell(wavelength=1.60, tune_param=unit_cell_diameters_wvl_1600, sim_phase=unit_cell_phases_wvl_1600)
+    unit_cells_list = [unit_cell_1500, unit_cell_1550, unit_cell_1600]
 
     initial_space_grid = pid.SpaceGrid(
         side_pixels=N, 
@@ -103,6 +108,7 @@ def setup_optical_system()->pid.Simulation:
         opt_max_eval=opt_max_eval,
         conic_filter_radius=1.5,
         unit_cells=unit_cells_list,
+        strategy='epigraph',
         results_while_solving = False,
         save_results = False,
     )

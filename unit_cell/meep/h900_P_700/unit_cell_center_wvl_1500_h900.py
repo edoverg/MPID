@@ -1,0 +1,192 @@
+import meep as mp
+from meep.materials import fused_quartz
+mp.verbosity(1)
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+from mpi4py import MPI
+
+comm = MPI.COMM_WORLD
+rank = comm.Get_rank()
+size = comm.Get_size()
+
+resolution = 50 # pixels/unit length
+
+wvl_min = 1.53
+wvl_max = 1.57
+wvl_cen = 1.50
+fmin = 1/wvl_max
+fmax = 1/wvl_min
+fcen = 1/wvl_cen
+df = fmax-fmin
+nfreq = 1
+
+dpml = 1.0 #PML thickness
+dsub = 1.5 + wvl_cen #substrate thickness
+dpad = dsub #padding between cell and PML
+
+k_point = mp.Vector3(0,0,0) #used for PBC
+
+#MATERIALS
+#a-Si 
+#Pierce and Spicer 1972: n,k 0.0103–2.07 µm
+n_si = 3.4858 #refractive index of silicon @ 1.50 µm
+si = mp.Medium(index=n_si)
+
+#Fused quartz
+#I.H. Malitson, J. Optical Society of America, Vol. 55, pp. 1205-9 (1965)
+#sio2 = fused_quartz
+n_sio2 = 1.4446 #refractive index of fused quartz @ 1.50 µm
+sio2 = mp.Medium(index=n_sio2)
+
+n_air = 1.0 #air refractive index
+air = mp.Medium(index=n_air)
+#======================
+
+P = 0.7 #unit cell pitch
+h = 0.9 #pillar height
+
+sim_x_size = dpml + dsub + dpad + dpml
+sim_z_size = P
+sim_y_size = P
+
+cell_size = mp.Vector3(sim_x_size, sim_y_size, sim_z_size)
+
+source_position = mp.Vector3(-wvl_cen,0,0) #source position in the middle of the substrate
+source = mp.Source(
+    mp.GaussianSource(fcen, fwidth=df),
+    component = mp.Ez,
+    center = source_position,
+    size = mp.Vector3(0, sim_y_size, sim_z_size),
+)
+
+pml_layers = [mp.PML(dpml,direction=mp.X)]
+
+monitor_position = mp.Vector3(h + wvl_cen,0,0)
+obs_point = monitor_position
+stop_cond = mp.stop_when_fields_decayed(50, mp.Ez, obs_point, 1e-9)
+
+
+def norm_sim():
+    #stop_cond = 100
+    sim = mp.Simulation(
+        resolution = resolution,
+        cell_size = cell_size,
+        boundary_layers = pml_layers,
+        k_point = k_point,
+        default_material = sio2,
+        sources = [source],
+    )
+
+    flux_mon = sim.add_flux(
+        [fcen],
+        mp.FluxRegion(center=monitor_position, size=mp.Vector3(0, sim_y_size, sim_z_size))
+    )
+
+    sim.run(until_after_sources=stop_cond)
+    input_flux = mp.get_fluxes(flux_mon)
+
+    sim.reset_meep()
+    return input_flux
+
+
+def unitCell_paramsweep(D,input_flux):
+
+    pillar_geo = mp.Cylinder(
+        material = si,
+        radius = D/2,
+        height = h,
+        center = mp.Vector3(h/2,0,0),
+        axis=mp.Vector3(1,0,0),
+    )
+
+    substrate_geo = mp.Block(
+        material = sio2,
+        size = mp.Vector3(dsub+dpml, mp.inf, mp.inf),
+        center = mp.Vector3(-(dsub+dpml)/2,0,0),
+    )
+
+    geometries = [substrate_geo, pillar_geo]
+
+    sim = mp.Simulation(
+        resolution = resolution,
+        cell_size = cell_size,
+        boundary_layers = pml_layers,
+        geometry = geometries,
+        k_point = k_point,
+        sources = [source],
+    )
+
+    mode_mon = sim.add_flux(
+        [fcen],
+        mp.FluxRegion(center=monitor_position, size=mp.Vector3(0, sim_y_size, sim_z_size))
+    )
+
+    sim.run(until_after_sources=stop_cond)
+
+    freqs = mp.get_eigenmode_freqs(mode_mon)
+    res = sim.get_eigenmode_coefficients(
+        mode_mon, [1], eig_parity=mp.ODD_Z + mp.EVEN_Y
+    )
+    coeffs = res.alpha
+
+    mode_wvl = [1/freqs[nf] for nf in range(nfreq)]
+    mode_tran = [abs(coeffs[0,nf,0])**2 / input_flux[nf] for nf in range(nfreq)]
+    mode_phase = [np.angle(coeffs[0,nf,0]) for nf in range(nfreq)]
+
+    return mode_wvl, mode_tran, mode_phase
+
+if rank == 0:
+    diameters = np.linspace(0.1, 0.6, 24)
+else:
+    diameters = None
+diameters = comm.bcast(diameters, root=0)
+
+local_diameters = np.array_split(diameters, size)[rank]
+local_indices = np.array_split(np.arange(len(diameters)), size)[rank]
+
+local_mode_tran_arr = np.zeros(len(diameters))
+local_mode_phase_arr = np.zeros(len(diameters))
+
+#the normalization sim can be run once and used
+#for the following diameter sweep
+input_flux = norm_sim()
+
+for local_i, (global_i, D) in enumerate(zip(local_indices, local_diameters)):
+    print(f"Rank {rank} is processing diameter {D:.3f} (index {global_i})")
+    mode_wvl, mode_tran, mode_phase = unitCell_paramsweep(D,input_flux)
+    local_mode_tran_arr[global_i] = mode_tran[0]
+    local_mode_phase_arr[global_i] = mode_phase[0]
+
+comm.Barrier()
+mode_tran_arr = comm.gather(local_mode_tran_arr, root=0)
+mode_phase_arr = comm.gather(local_mode_phase_arr, root=0)
+final_mode_tran_arr = np.zeros(len(diameters))
+final_mode_phase_arr = np.zeros(len(diameters))
+if rank == 0:
+    for i in range(size):
+        final_mode_tran_arr += mode_tran_arr[i]
+        final_mode_phase_arr += mode_phase_arr[i]
+    
+    
+    wvl_cen_str = str(wvl_cen).replace('.', '_')
+    h_str = str(h).replace('.', '_')
+    np.save(f"unit_cell_center_wvl_{wvl_cen_str}_h_{h_str}_diameters.npy", diameters)
+    np.save(f"unit_cell_center_wvl_{wvl_cen_str}_h_{h_str}_mode_wvl.npy", mode_wvl)
+    np.save(f"unit_cell_center_wvl_{wvl_cen_str}_h_{h_str}_mode_tran.npy", final_mode_tran_arr)
+    np.save(f"unit_cell_center_wvl_{wvl_cen_str}_h_{h_str}_mode_phase.npy", final_mode_phase_arr)
+
+    plt.figure()
+    plt.subplot(1,2,1)
+    plt.plot(diameters,final_mode_tran_arr)
+    plt.xlabel("Pillar Diameter (um)")
+    plt.ylabel("Transmission")
+    plt.subplot(1,2,2)
+    plt.plot(diameters,final_mode_phase_arr)
+    plt.xlabel("Pillar Diameter (um)")
+    plt.ylabel("Phase (rad)")
+    plt.subplots_adjust(wspace=0.5)
+    plt.savefig(f"unit_cell_fcen_{wvl_cen_str}_h_{h_str}.pdf")
+
+

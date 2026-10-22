@@ -186,15 +186,16 @@ class SpaceGrid:
         return self.rho
 
 class UnitCell:
-    def __init__(self,wavelength,tune_param:np.ndarray,sim_phase:np.ndarray):
+    def __init__(self,wavelength,tune_param:np.ndarray,sim_phase:np.ndarray, sim_magnitude:np.ndarray = None):
         '''
-        Constructs a unit cell object with a given tuning parameter and associated simulated transmission phase, at the specified wavelength.
+        Constructs a unit cell object with a given tuning parameter and associated simulated transmission phase and magnitude, at the specified wavelength.
         Once initialized, the gradient of the phase with respect to the tuning parameter is computed.
 
         Parameters:
             wavelength (float): The wavelength associated with the simulation in micrometers [um].
             tune_param (ndarray): The tuning parameter for the unit cell.
             sim_phase (ndarray): The associated simulated phase value.
+            sim_magnitude (ndarray, optional): The associated simulated magnitude value. Defaults to None.
         '''
         self.wavelength = wavelength * 1e-6
         self.tune_param = tune_param
@@ -206,6 +207,7 @@ class UnitCell:
         self.sim_phase_filtered = np.convolve(self.sim_phase_raw_extended, np.ones(moving_average_size)/moving_average_size, mode='same')
         #the final value needs to remove the extra elements added for the moving average
         self.sim_phase_filtered = self.sim_phase_filtered[:-moving_average_size]
+        self.sim_magnitude = sim_magnitude
         self._compute_gradient()
 
     def get_wavelength(self):
@@ -238,6 +240,18 @@ class UnitCell:
         if is_normalized:
             tune_param_value = self.get_param_from_norm(tune_param_value)
         return np.interp(tune_param_value, self.tune_param, self.raw_gradient)
+
+    def get_magnitude_at_param(self, tune_param_value):
+        '''
+        Retrieves the simulated magnitude at a specific tuning parameter value.
+
+        Parameters:
+            tune_param_value (np.ndarray or float): The tuning parameter value at which to retrieve the simulated magnitude.
+
+        Returns:
+            np.ndarray or float: The simulated magnitude at the specified tuning parameter value.
+        '''
+        return np.interp(tune_param_value, self.tune_param, self.sim_magnitude)
 
     def get_phase_at_param(self, tune_param_value):
         '''
@@ -317,6 +331,9 @@ class UnitCell:
 
     def get_tune_param(self):
         return self.tune_param
+
+    def get_magnitude(self):
+        return self.sim_magnitude
 
     def get_raw_sim_phase(self):
         return self.sim_phase_raw
@@ -726,7 +743,9 @@ class Simulation:
         target_centers = [target.get_center() for target in self.targets]
 
         self.w_norm = np.zeros((self.num_phase_masks*self.space_grid.get_S()))
-
+        self.optimal_w_norm = np.zeros_like(self.w_norm)
+        self.best_epigraph = 0
+        self.best_opt_val = 0
         circular_mask_source = [self._build_circular_mask(source_center, self.phase_mask_init_size) for source_center in source_centers]
         circular_mask_target = [self._build_circular_mask(target_center, self.phase_mask_init_size) for target_center in target_centers]
 
@@ -977,7 +996,7 @@ class Simulation:
             self.filtered_phase_mask[:] = self.current_unit_cell.get_phase_from_norm_param(self.filtered_w_norm)
 
         self._forward_propagate(source)
-
+        #i take the real part just to be sure
         C_s = np.real(np.abs(np.sum(self.output_field * np.conj(target.get_field(space_grid=self.space_grid, flatten=True)))) ** 2)
         grads = self._adjoint_propagate(target)
 
@@ -1016,111 +1035,96 @@ class Simulation:
             Shape should be mxn, where m is the number of constraints and n is the number of design weights.
 
         '''
-        print("evaluating epigraph constraint")
         epigraph = epigraph_and_weights[0]
         x = epigraph_and_weights[1:]
-        #we need to manage the number of phase masks, depending on the current object instance
+
         if self.space_grid.xy_symmetry:
-            if self.num_phase_masks == 2:
-                ms1_first_quadrant = x[:self.space_grid.get_S_symm()].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
-                ms2_first_quadrant = x[self.space_grid.get_S_symm():].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
-                ms1 = self._expand_symmetrize(ms1_first_quadrant)
-                ms2 = self._expand_symmetrize(ms2_first_quadrant)
-            elif self.num_phase_masks == 3:
-                ms1_first_quadrant = x[:self.space_grid.get_S_symm()].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
-                ms2_first_quadrant = x[self.space_grid.get_S_symm(): 2*self.space_grid.get_S_symm()].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
-                ms3_first_quadrant = x[2*self.space_grid.get_S_symm():].reshape(self.space_grid.get_Nx()//2+1, self.space_grid.get_Ny()//2+1)
-                ms1 = self._expand_symmetrize(ms1_first_quadrant)
-                ms2 = self._expand_symmetrize(ms2_first_quadrant)
-                ms3 = self._expand_symmetrize(ms3_first_quadrant)
+            #if symmetry is used, then x contains the first quadrant of all the metasurfaces involved
+            ms = [self._expand_symmetrize(quadrant) for quadrant in self._split_masks(x,self.space_grid.get_S_symm())]
+		#the method _split_masks automatically splits a given array into the correct number of metasurfaces
         else:
-            if self.num_phase_masks == 2:
-                ms1 = x[:self.space_grid.get_S()]
-                ms2 = x[self.space_grid.get_S():]
-            elif self.num_phase_masks == 3:
-                ms1 = x[:self.space_grid.get_S()]
-                ms2 = x[self.space_grid.get_S(): 2*self.space_grid.get_S()]
-                ms3 = x[2*self.space_grid.get_S():]
-
-        if self.num_phase_masks == 2:
-            all_ms = np.concatenate((ms1, ms2))
-        elif self.num_phase_masks == 3:
-            all_ms = np.concatenate((ms1, ms2, ms3))
-
-        self.w_norm[:] = all_ms
-        self.phase_mask[:] = self._phase_given_w(self.w_norm)
-
-        if self.use_filtering:
-            if self.num_phase_masks == 2:
-                phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
-                phase_mask_2 = self.phase_mask[self.space_grid.get_S():]
-                filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
-                filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
-                self.filtered_phase_mask[:] = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2))
-            elif self.num_phase_masks == 3:
-                phase_mask_1 = self.phase_mask[:self.space_grid.get_S()]
-                phase_mask_2 = self.phase_mask[self.space_grid.get_S(): 2*self.space_grid.get_S()]
-                phase_mask_3 = self.phase_mask[2*self.space_grid.get_S():]
-                filtered_phase_mask_1 = self._phase_filter(phase_mask_1)
-                filtered_phase_mask_2 = self._phase_filter(phase_mask_2)
-                filtered_phase_mask_3 = self._phase_filter(phase_mask_3)
-                self.filtered_phase_mask[:] = np.concatenate((filtered_phase_mask_1, filtered_phase_mask_2, filtered_phase_mask_3))
+            ms = self._split_masks(x,self.space_grid.get_dof() // self.num_phase_masks)
+            
+        self.w_norm[:] = np.concatenate(ms) #at this point w_norm is a 1d array contains the FULL phase masks (all phase masks)
+        
+        w_masks = self._split_masks(self.w_norm) #w_masks is a list with the individual FULL masks
+        if self.use_unit_cells: #conditional to use unit cell gradients
+            if self.use_filtering:
+                filtered_w_masks = [self._normParam_filter(w) for w in w_masks] #if using cells and filtering, then the correct filter kernel is _normParam_filter
+            else:
+                filtered_w_masks = [np.copy(w) for w in w_masks]
+            self.filtered_w_norm = np.concatenate(filtered_w_masks)
         else:
-            self.filtered_phase_mask[:] = self.phase_mask
-
-        #after the phase masks are set, we need to compute value and gradients for each target
-        grads_matrix = np.zeros((len(self.targets), self.space_grid.get_dof()))
-        results_array = np.zeros(len(self.targets))
+            #if we do not use unit cells, then simply 
+            phase_masks = [self._phase_given_w(w) for w in w_masks] #constructs the phase masks from normalized parameters
+            #note that _phase_give_w automatically checks if unit cells are being used. If we do not use unit cells, then normalized 
+            #parameters are turned into phase by simply multiplying them by 2pi
+            if self.use_filtering:
+                filtered_phase_masks = [self._phase_filter(phase) for phase in phase_masks]
+            else:
+                filtered_phase_masks = phase_masks
+            self.filtered_phase_mask[:] = np.concatenate(filtered_phase_masks)
+        
+        results_array = np.zeros(len(self.targets)) #used to store the overlap value at each target
+        grads_matrix = np.zeros((len(self.targets), self.space_grid.get_dof())) #used to store gradients at each target
+        
+        mC_at_wavelengths = []
+        tested_wavelength = []
 
         for idx, target in enumerate(self.targets):
 
             C, full_grads = self._value_and_grad(target) 
-            #minus sign required because the constraint is in the form of f - t < 0 and we minimize the epigraph t
-            results_array[idx] = - C 
+            mC_at_wavelengths.append(-C)
+            tested_wavelength.append(target.wavelength)
+            #minus sign required because the constraint is in the form of f - t < 0 and we MINIMIZE the epigraph t
+            results_array[idx] = - C
 
+            #apply chain rule if use_unit_cells is active
+            #in practice, from dC / dPhi we compute dPhi / dwf * dC / dPhi to get dC / dwf
+            if self.use_unit_cells:
+                full_grads = [g * self.current_unit_cell.get_complete_gradient_from_norm_param(fw) for g, fw in zip(full_grads, filtered_w_masks)]
+
+            #we now need to apply the tensor jacobian to account for filtering, if active
             if self.use_filtering:
-                if self.num_phase_masks == 2:
-                    jac_grad_1 = tensor_jacobian_product(self._phase_filter)(phase_mask_1, full_grads[0])
-                    print("jac 1 done")
-                    jac_grad_2 = tensor_jacobian_product(self._phase_filter)(phase_mask_2, full_grads[1])
-                    print("jac 2 done")
-                elif self.num_phase_masks == 3:
-                    jac_grad_1 = tensor_jacobian_product(self._phase_filter)(phase_mask_1, full_grads[0])
-                    print("jac 1 done")
-                    jac_grad_2 = tensor_jacobian_product(self._phase_filter)(phase_mask_2, full_grads[1])
-                    print("jac 2 done")
-                    jac_grad_3 = tensor_jacobian_product(self._phase_filter)(phase_mask_3, full_grads[2])
-                    print("jac 3 done")
+                if self.use_unit_cells:
+                    filter_fun, filter_inputs = self._normParam_filter, w_masks
+                else:
+                    filter_fun, filter_inputs = self._phase_filter, phase_masks
+                jac_grads = [tensor_jacobian_product(filter_fun)(inp, g) for inp, g in zip(filter_inputs, full_grads)]
             else:
-                if self.num_phase_masks == 2:
-                    jac_grad_1 = full_grads[0]
-                    jac_grad_2 = full_grads[1]
-                elif self.num_phase_masks == 3:
-                    jac_grad_1 = full_grads[0]
-                    jac_grad_2 = full_grads[1]
-                    jac_grad_3 = full_grads[2]
+                jac_grads = full_grads
 
             if self.space_grid.xy_symmetry:
-                jac_grad_1_symm = self._reduce_symmetrized_gradient(jac_grad_1)
-                jac_grad_2_symm = self._reduce_symmetrized_gradient(jac_grad_2)
-                if self.num_phase_masks == 3:
-                    jac_grad_3_symm = self._reduce_symmetrized_gradient(jac_grad_3)
-                    jac_grad = np.concatenate((jac_grad_1_symm, jac_grad_2_symm, jac_grad_3_symm), axis=0)
-                else:
-                    jac_grad = np.concatenate((jac_grad_1_symm, jac_grad_2_symm), axis=0)
-            else:
-                if self.num_phase_masks == 2:
-                    jac_grad = np.concatenate((jac_grad_1, jac_grad_2), axis=0)
-                elif self.num_phase_masks == 3:
-                    jac_grad = np.concatenate((jac_grad_1, jac_grad_2, jac_grad_3), axis=0)
+                jac_grads = [self._reduce_symmetrized_gradient(j) for j in jac_grads]
 
-            grads_matrix[idx, :] = jac_grad
+            if self.use_unit_cells:
+                grads_matrix[idx,:] = - np.concatenate(jac_grads)
+            else:
+                grads_matrix[idx, :] = - np.concatenate(jac_grads) * 2 * np.pi
 
         result[:] = results_array - epigraph
+        
+        #check if the current case satisfies the constraints
+        epigraph_constraint_satisfied = all(mC <= epigraph + 1e-4 for mC in mC_at_wavelengths)
+        if epigraph_constraint_satisfied:
+            if max(mC_at_wavelengths) < self.best_epigraph:
+                self.best_epigraph = max(mC_at_wavelengths)
+                self.best_opt_val = max(mC_at_wavelengths)
+                #save the normalized parameters associated with the best epigraph
+                self.optimal_w_norm[:] = self.w_norm
+            #     fig, ax = plt.subplots()
+            #     ax.plot(tested_wavelength, mC_at_wavelengths, 'o-', label='-C')
+            #     ax.axhline(y=epigraph, color='r', linestyle='--', label='Epigraph')
+            #     ax.set_xlabel('Wavelength [um]')
+            #     ax.set_ylabel('-C')
+            #     ax.legend()
+            #     plt.savefig("results/constraints_eval.pdf")
+            #     plt.close()
+            # print("Current best epigraph:", self.best_epigraph)
 
         if gradient.size > 0:
             gradient[:,0] = -1
-            gradient[:,1:] = - grads_matrix * 2 * np.pi
+            gradient[:,1:] = grads_matrix
 
 
     def _obj_fun(self, epigraph_and_weights, grad):
@@ -1148,7 +1152,7 @@ class Simulation:
         
         return epigraph
 
-    def _split_masks(self, arr, mask_size=None):
+    def _split_masks(self, arr, mask_size=None)->list:
         '''
         Splits an array that concatenates all the phase masks into a list with one entry (a view) per phase mask.
         mask_size defaults to the full size S of a single mask.
@@ -1282,7 +1286,7 @@ class Simulation:
         # else:
         #     self.filtered_phase_mask = self.phase_mask
 
-        mask_upper_bounds = self.norm_phase_max * np.where(self.space_grid.get_X().flatten()**2 + self.space_grid.get_Y().flatten()**2 < (self.ms_max_avail_diameter/2)**2, 1, 0)
+        mask_upper_bounds = self.norm_phase_max * np.where(self.space_grid.get_X().flatten()**2 + self.space_grid.get_Y().flatten()**2 < (self.ms_max_avail_diameter/2)**2, 1.0, 0.0)
         mask_upper_bounds_full = np.tile(mask_upper_bounds,self.num_phase_masks)
         mask_lower_bounds_full = np.zeros_like(mask_upper_bounds_full)
         
@@ -1308,7 +1312,7 @@ class Simulation:
 
         elif self.strategy == 'epigraph':
 
-            self.solver = nlopt.opt(nlopt.LD_CCSAQ, self.space_grid.get_dof() + 1)
+            self.solver = nlopt.opt(nlopt.LD_MMA, self.space_grid.get_dof() + 1)
 
             epigraph_and_weights_lower_bounds = np.insert(self.chosen_mask_lower_bounds.flatten(), 0, -np.inf)
             epigraph_and_weights_upper_bounds = np.insert(self.chosen_mask_upper_bounds.flatten(), 0, np.inf)
@@ -1580,7 +1584,7 @@ class Simulation:
             overlap = np.abs(np.sum(np.conj(target_field) * output_field))**2
             results_dict[source.get_wavelength()] = overlap
             if save_output:
-                save_filename = f"{self.results_folder}/output_field_{wavelength*1e6}"
+                save_filename = f"{self.results_folder}/output_field_{str(np.round(wavelength*1e6, 2))}"
                 save_filename = save_filename.replace('.', '_') + ".npy"
                 np.save(save_filename, output_field)
 
@@ -1605,37 +1609,43 @@ class Simulation:
                     if self.strategy == 'epigraph':
                         epigraph_w_norm_symm = self.solver.optimize(np.insert(self.w_norm_symm, 0, 0))
                         self.w_norm_symm[:] = epigraph_w_norm_symm[1:]
+                        self.w_norm[:] = self.optimal_w_norm
                     elif self.strategy == 'mean':
                         self.w_norm_symm[:] = self.solver.optimize(self.w_norm_symm)
+                        self.best_opt_val = self.solver.last_optimum_value()
+                        if self.num_phase_masks == 2:
+                            self.w_norm[:self.space_grid.get_S()] = self._expand_symmetrize(self.w_norm_symm[:self.space_grid.get_S_symm()])
+                            self.w_norm[self.space_grid.get_S():] = self._expand_symmetrize(self.w_norm_symm[self.space_grid.get_S_symm():])
+                        elif self.num_phase_masks == 3:
+                            self.w_norm[:self.space_grid.get_S()] = self._expand_symmetrize(self.w_norm_symm[:self.space_grid.get_S_symm()])
+                            self.w_norm[self.space_grid.get_S():2*self.space_grid.get_S()] = self._expand_symmetrize(self.w_norm_symm[self.space_grid.get_S_symm():2*self.space_grid.get_S_symm()])
+                            self.w_norm[2*self.space_grid.get_S():] = self._expand_symmetrize(self.w_norm_symm[2*self.space_grid.get_S_symm():])
                     else:
                         raise ValueError(f"Unknown strategy: {self.strategy}")
 
-                    self.is_optimized_flag = True
-                    self.best_opt_val = self.solver.last_optimum_value()
-                    if self.num_phase_masks == 2:
-                        self.w_norm[:self.space_grid.get_S()] = self._expand_symmetrize(self.w_norm_symm[:self.space_grid.get_S_symm()])
-                        self.w_norm[self.space_grid.get_S():] = self._expand_symmetrize(self.w_norm_symm[self.space_grid.get_S_symm():])
-                    elif self.num_phase_masks == 3:
-                        self.w_norm[:self.space_grid.get_S()] = self._expand_symmetrize(self.w_norm_symm[:self.space_grid.get_S_symm()])
-                        self.w_norm[self.space_grid.get_S():2*self.space_grid.get_S()] = self._expand_symmetrize(self.w_norm_symm[self.space_grid.get_S_symm():2*self.space_grid.get_S_symm()])
-                        self.w_norm[2*self.space_grid.get_S():] = self._expand_symmetrize(self.w_norm_symm[2*self.space_grid.get_S_symm():])
+                    self.is_optimized_flag = True  
                 else:
                     if self.strategy == 'epigraph':
                         self.epigraph_w_norm = np.insert(self.w_norm, 0, 0)
                         self.epigraph_w_norm[:] = self.solver.optimize(self.epigraph_w_norm)
-                        self.w_norm[:] = self.epigraph_w_norm[1:]
+                        #self.w_norm[:] = self.epigraph_w_norm[1:]
+                        self.w_norm[:] = self.optimal_w_norm #21/10/2026
+                        #self.best_opt_val = self.best_epigraph
                     elif self.strategy == 'mean':
                         self.w_norm[:] = self.solver.optimize(self.w_norm)
+                        self.best_opt_val = self.solver.last_optimum_value()
                     else:
                         raise ValueError(f"Unknown strategy: {self.strategy}")
                     
                     self.is_optimized_flag = True
-                    self.best_opt_val = self.solver.last_optimum_value()
+                    
 
                 if self.save_results:
                     self._export_results()
 
                 self.iter_num[:] = [0]
+                #might need to take the absolute value to make both average and epigraph strategies
+                #compatible with the ego script
                 return self.best_opt_val
             else:
                 raise RuntimeError("Optimization settings have not been specified.")

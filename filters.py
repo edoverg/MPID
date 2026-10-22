@@ -15,7 +15,8 @@ class Filter:
         
     def apply_filter(self, input_parameters):
         input_parameters_2d = input_parameters.reshape(self.space_grid.get_Nx(), self.space_grid.get_Ny())
-        input_parameters_padded = self._edge_pad(input_parameters_2d, (((self.Fx-1)//2, (self.Fx)//2), ((self.Fy-1)//2, (self.Fy)//2)))
+        #input_parameters_padded = self._edge_pad(input_parameters_2d, (((self.Fx-1)//2, (self.Fx)//2), ((self.Fy-1)//2, (self.Fy)//2)))
+        input_parameters_padded = self._edge_pad(input_parameters_2d, ((0,0), (0,0)))
         #print("input_parameters_padded shape:",input_parameters_padded.shape)
         input_parameters_fft = npa.fft.fft2(input_parameters_padded)
         
@@ -136,7 +137,7 @@ class Filter:
             input_parameters: the input parameters to be filtered (2D)
             radius: the radius of the conic filter in micrometers
             space_grid: a SpaceGrid object containing the size and resolution of the parameters
-        
+
         Returns:
             The filtered parameters (2D)
         '''
@@ -151,8 +152,18 @@ class Filter:
 
         h = npa.where(Xv**2 + Yv**2 < radius**2, (1 - npa.sqrt(abs(Xv**2 + Yv**2)) / radius),0)
 
-        #impulse response is padded to [Fx,Fy]
-        h = self._quarter_to_full_kernel(h, npa.array([self.Fx + Nx - 1, self.Fy + Ny - 1]))
+        #22/10/2026:
+        # Necessity: computational efficiency of the filter; reduction of computational time
+        # Issues: applying edge-padding/zero-padding increases the computational load.
+        # This is associated to the FFT calculation. 
+        # Solution: edge-padding is necessary is the signal extends up to the border. In that 
+        # condition, given that FFT treats the signal as periodic, edge-padding ensures that the filter 
+        # does not introduce artifacts at the boundaries. In our case, the signal is represented by the 
+        # masks, which inherently have finite support and are zero padded by default. 
+        # Therefore, edge-padding is not strictly necessary in this particular case.
+        # This might need to be reconsidered if the signal extends close to the boundaries or if 
+        # the filter radius is large compared to the signal support.
+        h = self._quarter_to_full_kernel(h, npa.array([Nx, Ny]))
         
         print("Fx, Fy:", self.Fx, self.Fy)
 

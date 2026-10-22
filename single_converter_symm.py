@@ -5,7 +5,7 @@ if not os.path.exists("results"):
     os.makedirs("results")
 #Space grid definition
 N = 1025
-unit_cell_pitch = 0.700
+unit_cell_pitch = 0.650
 
 n0 = 1.444
 n1 = 1.0
@@ -13,19 +13,15 @@ n2 = 1.444
 mat_refr_index = np.array([n0, n1, n2])
 
 
-#d0 = 400 #propagation distance: source - MS1 [um] NO FILT
-#d1 = 280 #propagation distance: MS1 - MS2 [um] NO FILT
-#d0 = 516 #propagation distance: source - MS1 [um] FILTERED mf (using LP01 of FMF)
-#d1 = 467 #propagation distance: MS1 - MS2 [um] FILTERED mf (using LP01 of FMF)
-d0 = 195 #propagation distance: source - MS1 [um] FILTERED mf (using LP01 of SMF)
-d1 = 129 #propagation distance: MS1 - MS2 [um] FILTERED mf (using LP01 of SMF)
+d0 = 246 #propagation distance: source - MS1 [um] FILTERED mf (using LP01 of SMF)
+d1 = 238 #propagation distance: MS1 - MS2 [um] FILTERED mf (using LP01 of SMF)
 
 d2 = d0 #propagation distance: MS2 - target [um]
 d = np.array([d0, d1, d2])
 
 ms_max_available_diameter = 122 #[um]
 output_fiber_core_diameter = 19 #[um]
-opt_max_eval = 600
+opt_max_eval = 250
 
 space_grid = pid.SpaceGrid(
     side_pixels=N, 
@@ -36,10 +32,10 @@ space_grid = pid.SpaceGrid(
 )
 
 #define the source
-wavelengths_to_test_um = [1.530,1.550,1.570] #[um]
-source_files = ["fiber_modes/SMF/SMF_LP01_field_distribution_lda_1530_N_1025.npy",
+wavelengths_to_test_um = [1.50, 1.55, 1.60] #[um]
+source_files = ["fiber_modes/SMF/SMF_LP01_field_distribution_lda_1500_N_1025.npy",
                 "fiber_modes/SMF/SMF_LP01_field_distribution_lda_1550_N_1025.npy",
-                "fiber_modes/SMF/SMF_LP01_field_distribution_lda_1570_N_1025.npy"]
+                "fiber_modes/SMF/SMF_LP01_field_distribution_lda_1600_N_1025.npy"]
 sources = [pid.Source(input_field=np.load(file), 
                       wavelength=wvl, 
                       field_norm=True) for file, wvl in zip(source_files, wavelengths_to_test_um)]
@@ -47,9 +43,9 @@ sources = [pid.Source(input_field=np.load(file),
 #sources[0].plot2D(plot_zoom_x=38,plot_zoom_y=38,choose_quantity='amplitude', save_name='results/input_field')
 #define targets
 #import field data from files and create target objects
-target_files = ["fiber_modes/FMF/FMF_LP21_field_distribution_lda_1530_N_1025.npy",
+target_files = ["fiber_modes/FMF/FMF_LP21_field_distribution_lda_1500_N_1025.npy",
                 "fiber_modes/FMF/FMF_LP21_field_distribution_lda_1550_N_1025.npy",
-                "fiber_modes/FMF/FMF_LP21_field_distribution_lda_1570_N_1025.npy"]
+                "fiber_modes/FMF/FMF_LP21_field_distribution_lda_1600_N_1025.npy"]
 
 target_fields = [np.load(file) for file in target_files]
 
@@ -61,17 +57,17 @@ targets = [pid.Target(input_field=target_fields[i],
 #targets[0].plot2D(plot_zoom_x=38,plot_zoom_y=38,choose_quantity='amplitude', save_name='results/target_field')
 
 #import unit cell data
-unit_cell_diameters_wvl_1530 = np.load("unit_cell/unit_cell_center_1530_h900nm_res50_wvl_diameters.npy")
-unit_cell_diameters_wvl_1550 = np.load("unit_cell/unit_cell_center_1550_h900nm_res50_wvl_diameters.npy")
-unit_cell_diameters_wvl_1570 = np.load("unit_cell/unit_cell_center_1570_h900nm_res50_wvl_diameters.npy")
-unit_cell_phases_wvl_1530 = np.load("unit_cell/unit_cell_center_1530_h900nm_res50_wvl_mode_phase.npy")
-unit_cell_phases_wvl_1550 = np.load("unit_cell/unit_cell_center_1550_h900nm_res50_wvl_mode_phase.npy")
-unit_cell_phases_wvl_1570 = np.load("unit_cell/unit_cell_center_1570_h900nm_res50_wvl_mode_phase.npy")
+unit_cell_diameters_wvl_1500 = np.load("unit_cell/final/export/unit_cell_diameter_P_0_65_h_0_9_1_5.npy")
+unit_cell_diameters_wvl_1550 = np.load("unit_cell/final/export/unit_cell_diameter_P_0_65_h_0_9_1_55.npy")
+unit_cell_diameters_wvl_1600 = np.load("unit_cell/final/export/unit_cell_diameter_P_0_65_h_0_9_1_6.npy")
+unit_cell_phases_wvl_1500 = np.load("unit_cell/final/export/unit_cell_phase_P_0_65_h_0_9_1_5.npy")
+unit_cell_phases_wvl_1550 = np.load("unit_cell/final/export/unit_cell_phase_P_0_65_h_0_9_1_55.npy")
+unit_cell_phases_wvl_1600 = np.load("unit_cell/final/export/unit_cell_phase_P_0_65_h_0_9_1_6.npy")
 #construct the UnitCell objects
-unit_cell_1530 = pid.UnitCell(wavelength=1.530, tune_param=unit_cell_diameters_wvl_1530, sim_phase=unit_cell_phases_wvl_1530)
+unit_cell_1500 = pid.UnitCell(wavelength=1.500, tune_param=unit_cell_diameters_wvl_1500, sim_phase=unit_cell_phases_wvl_1500)
 unit_cell_1550 = pid.UnitCell(wavelength=1.550, tune_param=unit_cell_diameters_wvl_1550, sim_phase=unit_cell_phases_wvl_1550)
-unit_cell_1570 = pid.UnitCell(wavelength=1.570, tune_param=unit_cell_diameters_wvl_1570, sim_phase=unit_cell_phases_wvl_1570)
-unit_cells_list = [unit_cell_1530, unit_cell_1550, unit_cell_1570]
+unit_cell_1600 = pid.UnitCell(wavelength=1.600, tune_param=unit_cell_diameters_wvl_1600, sim_phase=unit_cell_phases_wvl_1600)
+unit_cells_list = [unit_cell_1500, unit_cell_1550, unit_cell_1600]
 
 #setup the simulation instance
 simulation = pid.Simulation(
@@ -89,7 +85,8 @@ simulation.set_optimization(
     phase_mask_init_size=output_fiber_core_diameter/3,
     unit_cells=unit_cells_list,
     opt_max_eval=opt_max_eval,
-    #conic_filter_radius=1.0,    
+    conic_filter_radius=1.5,   
+    strategy='epigraph', 
 )
 
 simulation.run()
