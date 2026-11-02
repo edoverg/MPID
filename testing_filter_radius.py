@@ -11,8 +11,8 @@ class TempGrid:
     def get_resolution(self): return self.res
 
 
-grid = TempGrid(Nx=1025, Ny=1025, res=0.7)
-radius_to_test = [2.0, 5.0, 11.0]
+grid = TempGrid(Nx=1025, Ny=1025, res=0.65)
+radius_to_test = [1.0, 3.0, 5.0]
 
 input_mask = np.load('results/mask_2.npy')
 #make a plot of the input mask

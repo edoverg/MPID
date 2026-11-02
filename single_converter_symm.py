@@ -13,8 +13,8 @@ n2 = 1.444
 mat_refr_index = np.array([n0, n1, n2])
 
 
-d0 = 246 #propagation distance: source - MS1 [um] FILTERED mf (using LP01 of SMF)
-d1 = 238 #propagation distance: MS1 - MS2 [um] FILTERED mf (using LP01 of SMF)
+d0 = 340 #propagation distance: source - MS1 [um] FILTERED mf (using LP01 of SMF)
+d1 = 342 #propagation distance: MS1 - MS2 [um] FILTERED mf (using LP01 of SMF)
 
 d2 = d0 #propagation distance: MS2 - target [um]
 d = np.array([d0, d1, d2])
@@ -85,7 +85,7 @@ simulation.set_optimization(
     phase_mask_init_size=output_fiber_core_diameter/3,
     unit_cells=unit_cells_list,
     opt_max_eval=opt_max_eval,
-    conic_filter_radius=1.5,   
+    conic_filter_radius=1.0,   
     strategy='epigraph', 
 )
 

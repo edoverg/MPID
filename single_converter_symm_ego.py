@@ -36,7 +36,7 @@ mat_refr_index = np.array([n0, n1, n2])
 
 ms_max_available_diameter = 122 #[um]
 output_fiber_core_diameter = 19 #[um]
-opt_max_eval = 15
+opt_max_eval = 250
 
 def setup_optical_system()->pid.Simulation:
     '''

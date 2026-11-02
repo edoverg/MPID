@@ -100,7 +100,7 @@ def setup_optical_system()->pid.Simulation:
         ms_max_avail_diameter=ms_max_available_diameter,
         phase_mask_init_size=output_fiber_core_diameter/3,
         opt_max_eval=opt_max_eval,
-        conic_filter_radius=1.5,
+        conic_filter_radius=1.0,
         unit_cells=unit_cells_list,
         strategy='mean',
         results_while_solving = False,
@@ -120,8 +120,8 @@ if __name__ == "__main__":
     mask1 = np.load(f"{results_folder_name}/mask_1.npy").flatten()
     mask2 = np.load(f"{results_folder_name}/mask_2.npy").flatten()
     
-    d0 = 246 #propagation distance: source - MS1 [um] FILTERED mf (using LP01 of SMF)
-    d1 = 238 #propagation distance: MS1 - MS2 [um] FILTERED mf (using LP01 of SMF)
+    d0 = 340 #propagation distance: source - MS1 [um] FILTERED mf (using LP01 of SMF)
+    d1 = 342 #propagation distance: MS1 - MS2 [um] FILTERED mf (using LP01 of SMF)
 
     d2 = d0 #propagation distance: MS2 - target [um]
     d = np.array([d0, d1, d2])
@@ -156,8 +156,8 @@ if __name__ == "__main__":
         ax.tick_params(axis='y', labelsize=20)
         #set the tick fontsize to 20
         ax.tick_params(axis='both', which='major', labelsize=20)
-        ax.set_xlim(-output_fiber_core_diameter/2-10, output_fiber_core_diameter/2+10)
-        ax.set_ylim(-output_fiber_core_diameter/2-10, output_fiber_core_diameter/2+10)
+        ax.set_xlim(-output_fiber_core_diameter / 2 - 10, output_fiber_core_diameter / 2 + 10)
+        ax.set_ylim(-output_fiber_core_diameter / 2 - 10, output_fiber_core_diameter / 2 + 10)
         #overlay a red circle indicating the output fiber core
         circle = plt.Circle((0, 0), output_fiber_core_diameter/2, color='red', fill=False, linewidth=2)
         ax.add_artist(circle)
@@ -176,8 +176,8 @@ if __name__ == "__main__":
         ax.tick_params(axis='y', labelsize=20)
         #set the tick fontsize to 20
         ax.tick_params(axis='both', which='major', labelsize=20)
-        ax.set_xlim(-output_fiber_core_diameter/2-10, output_fiber_core_diameter/2+10)
-        ax.set_ylim(-output_fiber_core_diameter/2-10, output_fiber_core_diameter/2+10)
+        ax.set_xlim(-output_fiber_core_diameter / 2 - 10, output_fiber_core_diameter / 2 + 10)
+        ax.set_ylim(-output_fiber_core_diameter / 2 - 10, output_fiber_core_diameter / 2 + 10)
         #overlay a red circle indicating the output fiber core
         circle = plt.Circle((0, 0), output_fiber_core_diameter/2, color='red', fill=False, linewidth=2)
         ax.add_artist(circle)
@@ -187,7 +187,6 @@ if __name__ == "__main__":
         plt.tight_layout()
         plt.savefig(save_filename + "_phase.pdf")
         plt.close()
-
 
         target_field_filename = target_files[i]
         target_field = np.load(target_field_filename)
